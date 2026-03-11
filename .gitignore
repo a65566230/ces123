@@ -24,6 +24,7 @@ yarn-error.log*
 # Cache
 .cache/
 .cache-test/
+.worktrees/
 .temp/
 tmp/
 

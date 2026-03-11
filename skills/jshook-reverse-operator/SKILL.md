@@ -40,7 +40,7 @@ Then choose the next workflow:
 Engine routing for fresh work:
 
 - default triage -> `engine="auto"` so the server can prefer Playwright first
-- if the task becomes debugger-heavy, CDP-heavy, or function-tree focused -> recover or relaunch into Puppeteer
+- if the task becomes debugger-heavy, CDP-heavy, or function-tree focused -> recover the current Playwright session before going deeper
 - if the browser becomes degraded -> use `browser.recover` before restarting the investigation
 
 ### Existing investigation

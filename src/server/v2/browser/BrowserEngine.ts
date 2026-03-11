@@ -40,7 +40,7 @@ export interface BrowserEngineScript {
 export type BrowserEngineSnapshot = SessionSnapshot;
 
 export interface BrowserEngine {
-  type: 'puppeteer' | 'playwright';
+  type: 'playwright';
   launch(): Promise<void>;
   attach(target?: string): Promise<void>;
   newPage(url?: string): Promise<void>;

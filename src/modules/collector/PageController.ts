@@ -1,11 +1,48 @@
 // @ts-nocheck
 
 import { logger } from '../../utils/logger.js';
-import { buildNavigationPlan } from '../../server/v2/browser/navigation.js';
+import { buildNavigationPlan, toPlaywrightWaitUntil } from '../../server/v2/browser/navigation.js';
 export class PageController {
     collector;
     constructor(collector) {
         this.collector = collector;
+    }
+    async applyUserAgentOverride(page, userAgent) {
+        if (typeof page.setUserAgent === 'function') {
+            await page.setUserAgent(userAgent);
+            return;
+        }
+        if (typeof page.context === 'function') {
+            const context = page.context();
+            if (context && typeof context.newCDPSession === 'function') {
+                const cdp = await context.newCDPSession(page);
+                await cdp.send('Emulation.setUserAgentOverride', {
+                    userAgent,
+                });
+                return;
+            }
+        }
+        throw new Error('Page does not support user agent overrides');
+    }
+    async applyViewport(page, viewport) {
+        if (typeof page.setViewport === 'function') {
+            await page.setViewport(viewport);
+            return;
+        }
+        if (typeof page.setViewportSize === 'function') {
+            await page.setViewportSize(viewport);
+            return;
+        }
+        throw new Error('Page does not support viewport emulation');
+    }
+    async getPageCookies(page) {
+        if (typeof page.cookies === 'function') {
+            return await page.cookies();
+        }
+        if (typeof page.context === 'function') {
+            return await page.context().cookies();
+        }
+        throw new Error('Page does not support cookie inspection');
     }
     async navigate(url, options) {
         const page = await this.collector.getActivePage();
@@ -16,7 +53,7 @@ export class PageController {
         for (const attempt of plan.attempts) {
             try {
                 await page.goto(url, {
-                    waitUntil: attempt.waitUntil,
+                    waitUntil: toPlaywrightWaitUntil(attempt.waitUntil),
                     timeout: attempt.timeout || 30000,
                 });
                 const loadTime = Date.now() - startTime;
@@ -49,7 +86,7 @@ export class PageController {
         const page = await this.collector.getActivePage();
         const plan = buildNavigationPlan(options || {});
         await page.reload({
-            waitUntil: plan.attempts[0]?.waitUntil || 'networkidle2',
+            waitUntil: toPlaywrightWaitUntil(plan.attempts[0]?.waitUntil || 'networkidle2'),
             timeout: plan.attempts[0]?.timeout || 30000,
         });
         logger.info('Page reloaded');
@@ -135,10 +172,20 @@ export class PageController {
     }
     async waitForNavigation(timeout) {
         const page = await this.collector.getActivePage();
-        await page.waitForNavigation({
-            waitUntil: 'load',
-            timeout: timeout || 30000,
-        });
+        if (typeof page.waitForNavigation === 'function') {
+            await page.waitForNavigation({
+                waitUntil: 'load',
+                timeout: timeout || 30000,
+            });
+        }
+        else if (typeof page.waitForLoadState === 'function') {
+            await page.waitForLoadState('load', {
+                timeout: timeout || 30000,
+            });
+        }
+        else {
+            throw new Error('Page does not support navigation waiting');
+        }
         logger.info('Navigation completed');
     }
     async evaluate(code) {
@@ -199,24 +246,40 @@ export class PageController {
     }
     async setCookies(cookies) {
         const page = await this.collector.getActivePage();
-        await page.setCookie(...cookies);
+        if (typeof page.setCookie === 'function') {
+            await page.setCookie(...cookies);
+        }
+        else if (typeof page.context === 'function') {
+            await page.context().addCookies(cookies);
+        }
+        else {
+            throw new Error('Page does not support cookie injection');
+        }
         logger.info(`Set ${cookies.length} cookies`);
     }
     async getCookies() {
         const page = await this.collector.getActivePage();
-        const cookies = await page.cookies();
+        const cookies = await this.getPageCookies(page);
         logger.info(`Retrieved ${cookies.length} cookies`);
         return cookies;
     }
     async clearCookies() {
         const page = await this.collector.getActivePage();
-        const cookies = await page.cookies();
-        await page.deleteCookie(...cookies);
+        const cookies = await this.getPageCookies(page);
+        if (typeof page.deleteCookie === 'function') {
+            await page.deleteCookie(...cookies);
+        }
+        else if (typeof page.context === 'function') {
+            await page.context().clearCookies();
+        }
+        else {
+            throw new Error('Page does not support cookie clearing');
+        }
         logger.info('All cookies cleared');
     }
     async setViewport(width, height) {
         const page = await this.collector.getActivePage();
-        await page.setViewport({ width, height });
+        await this.applyViewport(page, { width, height });
         logger.info(`Viewport set to ${width}x${height}`);
     }
     async emulateDevice(deviceName) {
@@ -236,13 +299,21 @@ export class PageController {
             },
         };
         const device = devices[deviceName];
-        await page.setViewport(device.viewport);
-        await page.setUserAgent(device.userAgent);
+        await this.applyViewport(page, device.viewport);
+        await this.applyUserAgentOverride(page, device.userAgent);
         logger.info(`Emulating ${deviceName}`);
     }
     async waitForNetworkIdle(timeout = 30000) {
         const page = await this.collector.getActivePage();
-        await page.waitForNetworkIdle({ timeout });
+        if (typeof page.waitForNetworkIdle === 'function') {
+            await page.waitForNetworkIdle({ timeout });
+        }
+        else if (typeof page.waitForLoadState === 'function') {
+            await page.waitForLoadState('networkidle', { timeout });
+        }
+        else {
+            throw new Error('Page does not support network-idle waiting');
+        }
         logger.info('Network is idle');
     }
     async getLocalStorage() {

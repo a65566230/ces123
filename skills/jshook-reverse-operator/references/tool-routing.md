@@ -34,7 +34,7 @@ Start with grouped tools instead of `flow.*` when the user explicitly asks for:
 - a breakpoint, pause, resume, or watch expression
 - a direct hook injection/export action
 
-Prefer a Puppeteer-backed recovery before deep expert tools when the current session was created with `engine="auto"` and the task now requires:
+Prefer a Playwright session recovery before deep expert tools when the current session was created with `engine="auto"` and the task now requires:
 
 - `debug.*`
 - `inspect.scripts` function-tree extraction

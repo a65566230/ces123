@@ -8,7 +8,7 @@ import { startFixtureServer } from '../helpers/fixtureServer.js';
 import { parseToolResponse } from '../helpers/parseToolResponse.js';
 import { createTestConfig } from '../helpers/testConfig.js';
 
-describe('v2 flow with Puppeteer', () => {
+describe('v2 extended Playwright flow', () => {
   let fixture: Awaited<ReturnType<typeof startFixtureServer>>;
   let runtime: ToolRuntimeContext;
   let executor: ToolExecutor;
@@ -26,7 +26,7 @@ describe('v2 flow with Puppeteer', () => {
   });
 
   test('collects a site snapshot and builds a reverse report', async () => {
-    const launch = parseToolResponse(await executor.execute('browser.launch', { engine: 'puppeteer' }));
+    const launch = parseToolResponse(await executor.execute('browser.launch', { engine: 'playwright' }));
     const sessionId = launch.sessionId as string;
 
     const collect = parseToolResponse(await executor.execute('flow.collect-site', {
@@ -53,7 +53,7 @@ describe('v2 flow with Puppeteer', () => {
   });
 
   test('resolves a source map from a captured script', async () => {
-    const launch = parseToolResponse(await executor.execute('browser.launch', { engine: 'puppeteer' }));
+    const launch = parseToolResponse(await executor.execute('browser.launch', { engine: 'playwright' }));
     const sessionId = launch.sessionId as string;
 
     await executor.execute('browser.navigate', {
@@ -78,7 +78,7 @@ describe('v2 flow with Puppeteer', () => {
   });
 
   test('supports manifest-first collection, indexed script search, recovery, and obfuscation analysis', async () => {
-    const launch = parseToolResponse(await executor.execute('browser.launch', { engine: 'puppeteer' }));
+    const launch = parseToolResponse(await executor.execute('browser.launch', { engine: 'playwright' }));
     const sessionId = launch.sessionId as string;
 
     const collect = parseToolResponse(
@@ -147,7 +147,7 @@ describe('v2 flow with Puppeteer', () => {
   });
 
   test('supports natural-language hook generation for decrypt/signature workflows', async () => {
-    const launch = parseToolResponse(await executor.execute('browser.launch', { engine: 'puppeteer' }));
+    const launch = parseToolResponse(await executor.execute('browser.launch', { engine: 'playwright' }));
     const sessionId = launch.sessionId as string;
 
     await executor.execute('flow.collect-site', {
@@ -170,7 +170,7 @@ describe('v2 flow with Puppeteer', () => {
   });
 
   test('supports paginated script search and exposes runtime monitor stats', async () => {
-    const launch = parseToolResponse(await executor.execute('browser.launch', { engine: 'puppeteer' }));
+    const launch = parseToolResponse(await executor.execute('browser.launch', { engine: 'playwright' }));
     const sessionId = launch.sessionId as string;
 
     await executor.execute('flow.collect-site', {
@@ -197,7 +197,7 @@ describe('v2 flow with Puppeteer', () => {
   });
 
   test('rate limits repeated heavy search calls', async () => {
-    const launch = parseToolResponse(await executor.execute('browser.launch', { engine: 'puppeteer' }));
+    const launch = parseToolResponse(await executor.execute('browser.launch', { engine: 'playwright' }));
     const sessionId = launch.sessionId as string;
 
     await executor.execute('flow.collect-site', {

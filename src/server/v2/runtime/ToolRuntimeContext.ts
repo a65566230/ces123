@@ -24,6 +24,7 @@ export class ToolRuntimeContext {
     evidence = new EvidenceStore();
     storage;
     sessions;
+    maintenanceTimer;
     bundleFingerprints = new BundleFingerprintService();
     sourceMaps = new SourceMapAnalyzer();
     scriptDiff = new ScriptDiffService();
@@ -36,7 +37,7 @@ export class ToolRuntimeContext {
             cacheSize: config.storage.cacheSize,
         });
         this.browserPool = new BrowserPool({
-            headless: config.puppeteer.headless,
+            headless: config.browser.headless,
             maxContexts: Number(process.env.BROWSER_POOL_MAX_CONTEXTS || 8),
             executablePath: options.playwrightExecutablePath,
             viewport: options.viewport,
@@ -52,12 +53,20 @@ export class ToolRuntimeContext {
             maxCalls: config.rateLimit.maxCalls,
             windowMs: config.rateLimit.windowMs,
         });
-        this.ready = this.storage.init();
+        this.ready = this.storage.init().then(() => this.storage.cleanup());
         void this.runtimeMonitor.start();
+        this.maintenanceTimer = setInterval(() => {
+            void this.storage.cleanup().catch(() => undefined);
+        }, 12 * 60 * 60 * 1000);
+        this.maintenanceTimer.unref?.();
         this.sessions = new SessionLifecycleManager(config, options, this.storage, this.browserPool);
     }
     async close() {
         await this.ready;
+        if (this.maintenanceTimer) {
+            clearInterval(this.maintenanceTimer);
+            this.maintenanceTimer = undefined;
+        }
         await this.sessions.closeAll();
         await this.browserPool.close();
         await this.workerService.close();

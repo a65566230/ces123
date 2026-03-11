@@ -14,6 +14,7 @@ export class LegacyToolBridge {
         if (this.initialized) {
             return;
         }
+        await this.surface.storage.init();
         await this.surface.registerCaches();
         await this.surface.cache.init();
         this.initialized = true;

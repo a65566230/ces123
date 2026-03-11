@@ -1,10 +1,12 @@
 // @ts-nocheck
 
-import puppeteer from 'puppeteer';
+import { chromium } from 'playwright-core';
 import { logger } from '../../utils/logger.js';
 import { CaptchaDetector } from '../captcha/CaptchaDetector.js';
+import { resolveChromiumExecutablePath } from '../../utils/resolveChromiumExecutablePath.js';
 export class BrowserModeManager {
     browser = null;
+    context = null;
     currentPage = null;
     isHeadless = true;
     config;
@@ -37,7 +39,11 @@ export class BrowserModeManager {
             ],
             ignoreDefaultArgs: ['--enable-automation'],
         };
-        this.browser = await puppeteer.launch(options);
+        this.browser = await chromium.launch({
+            ...options,
+            executablePath: resolveChromiumExecutablePath(options.executablePath),
+        });
+        this.context = await this.browser.newContext();
         logger.info('✅ 浏览器启动成功');
         return this.browser;
     }
@@ -45,11 +51,11 @@ export class BrowserModeManager {
         if (!this.browser) {
             await this.launch();
         }
-        const page = await this.browser.newPage();
+        const page = await this.context.newPage();
         this.currentPage = page;
         await this.injectAntiDetectionScripts(page);
         if (this.sessionData.cookies && this.sessionData.cookies.length > 0) {
-            await page.setCookie(...this.sessionData.cookies);
+            await page.context().addCookies(this.sessionData.cookies);
         }
         return page;
     }
@@ -59,7 +65,7 @@ export class BrowserModeManager {
             throw new Error('No page available. Call newPage() first.');
         }
         logger.info(`🌐 导航到: ${url}`);
-        await targetPage.goto(url, { waitUntil: 'networkidle2' });
+        await targetPage.goto(url, { waitUntil: 'networkidle' });
         if (this.config.autoDetectCaptcha) {
             await this.checkAndHandleCaptcha(targetPage, url);
         }
@@ -88,7 +94,7 @@ export class BrowserModeManager {
         this.isHeadless = false;
         await this.launch();
         const newPage = await this.newPage();
-        await newPage.goto(url, { waitUntil: 'networkidle2' });
+        await newPage.goto(url, { waitUntil: 'networkidle' });
         this.showCaptchaPrompt(captchaInfo);
         const completed = await this.captchaDetector.waitForCompletion(newPage, this.config.captchaTimeout);
         if (completed) {
@@ -120,7 +126,7 @@ export class BrowserModeManager {
     }
     async saveSessionData(page) {
         try {
-            this.sessionData.cookies = await page.cookies();
+            this.sessionData.cookies = await page.context().cookies();
             const storageData = await page.evaluate(() => {
                 const local = {};
                 const session = {};
@@ -147,7 +153,7 @@ export class BrowserModeManager {
         }
     }
     async injectAntiDetectionScripts(page) {
-        await page.evaluateOnNewDocument(() => {
+        await page.addInitScript(() => {
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => undefined,
             });
@@ -224,6 +230,8 @@ export class BrowserModeManager {
     }
     async close() {
         if (this.browser) {
+            await this.context?.close();
+            this.context = null;
             await this.browser.close();
             this.browser = null;
             this.currentPage = null;

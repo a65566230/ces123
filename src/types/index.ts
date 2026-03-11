@@ -1,7 +1,7 @@
-import type { Browser, Page } from 'puppeteer';
+import type { Browser, Page } from 'playwright-core';
 export interface Config {
     llm: LLMConfig;
-    puppeteer: PuppeteerConfig;
+    browser: BrowserConfig;
     mcp: MCPConfig;
     cache: CacheConfig;
     storage: StorageConfig;
@@ -16,13 +16,20 @@ export interface LLMConfig {
         apiKey: string;
         model: string;
         baseURL?: string;
+        wireApi?: 'chat_completions' | 'responses';
+        reasoningEffort?: 'low' | 'medium' | 'high';
+        reasoningSummary?: 'auto' | 'none' | 'concise' | 'detailed';
+        verbosity?: 'low' | 'medium' | 'high';
+        contextWindow?: number;
+        autoCompactTokenLimit?: number;
+        disableResponseStorage?: boolean;
     };
     anthropic?: {
         apiKey: string;
         model: string;
     };
 }
-export interface PuppeteerConfig {
+export interface BrowserConfig {
     headless: boolean;
     timeout: number;
     args?: string[];

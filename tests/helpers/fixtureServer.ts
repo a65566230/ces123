@@ -14,6 +14,7 @@ export async function startFixtureServer(fixturesDir: string): Promise<{
   origin: string;
   close(): Promise<void>;
 }> {
+  const sockets = new Set<import('net').Socket>();
   const server = createServer(async (request, response) => {
     const requestUrl = new URL(request.url || '/', 'http://127.0.0.1');
 
@@ -38,6 +39,13 @@ export async function startFixtureServer(fixturesDir: string): Promise<{
     }
   });
 
+  server.on('connection', (socket) => {
+    sockets.add(socket);
+    socket.on('close', () => {
+      sockets.delete(socket);
+    });
+  });
+
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
   const address = server.address();
   if (!address || typeof address === 'string') {
@@ -48,6 +56,12 @@ export async function startFixtureServer(fixturesDir: string): Promise<{
     origin: `http://127.0.0.1:${address.port}`,
     close: () =>
       new Promise<void>((resolve, reject) => {
+        for (const socket of sockets) {
+          socket.destroy();
+        }
+        if (typeof server.closeAllConnections === 'function') {
+          server.closeAllConnections();
+        }
         server.close((error) => {
           if (error) {
             reject(error);

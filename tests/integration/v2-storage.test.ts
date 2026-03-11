@@ -28,7 +28,7 @@ describe('v2 storage-backed persistence', () => {
   test('persists collected network and script data into storage', async () => {
     const collect = parseToolResponse(
       await executor.execute('flow.collect-site', {
-        engine: 'puppeteer',
+        engine: 'playwright',
         url: `${fixture.origin}/basic/index.html`,
         collectionStrategy: 'deep',
       })

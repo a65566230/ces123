@@ -22,7 +22,7 @@
 
 ### 核心能力
 - **逆向工程**: 混淆代码分析、VM 破解、Webpack 解包、AST 转换
-- **浏览器自动化**: Puppeteer/CDP、反检测、指纹伪造、环境模拟
+- **浏览器自动化**: Playwright/CDP、反检测、指纹伪造、环境模拟
 - **加密识别**: AES/RSA/MD5/SHA 识别、参数提取、算法还原
 - **反爬虫绕过**: Canvas/WebGL 指纹、WebDriver 隐藏、行为模拟
 - **调试分析**: CDP 调试、断点分析、动态追踪、Hook 注入
@@ -697,7 +697,7 @@ page_navigate_jshook(url, enableNetworkMonitoring=true)
 - [AST Explorer](https://astexplorer.net/) - AST 可视化工具
 
 ### 反检测技术
-- [Puppeteer Extra Stealth](https://github.com/berstend/puppeteer-extra/tree/master/packages/puppeteer-extra-plugin-stealth)
+- [Playwright](https://playwright.dev/)
 - [Undetected ChromeDriver](https://github.com/ultrafunkamsterdam/undetected-chromedriver)
 - [Canvas Fingerprinting](https://browserleaks.com/canvas)
 

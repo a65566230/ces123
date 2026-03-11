@@ -3,12 +3,9 @@
 import * as parser from '@babel/parser';
 import traverse from '@babel/traverse';
 import { logger } from '../../utils/logger.js';
-import puppeteer from 'puppeteer-extra';
-import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import { BrowserEnvironmentRulesManager } from './BrowserEnvironmentRules.js';
 import { BrowserAPIDatabase } from './BrowserAPIDatabase.js';
 import { AIEnvironmentAnalyzer } from './AIEnvironmentAnalyzer.js';
-puppeteer.use(StealthPlugin());
 export class EnvironmentEmulatorEnhanced {
     llm;
     browser;

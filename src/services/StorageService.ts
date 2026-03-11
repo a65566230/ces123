@@ -156,9 +156,13 @@ interface CachedValue<T> {
  * All writes are durable on disk while a small LRU cache accelerates repeated reads.
  */
 export class StorageService {
+  private static readonly QUERY_CACHE_MAX_ENTRIES = 1000;
+  private static readonly QUERY_CACHE_TTL_MS = 5 * 60 * 1000;
+  private static readonly MAINTENANCE_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
   private readonly options: Required<StorageServiceOptions>;
   private readonly queryCache: LRUCache<string, CachedValue<unknown>>;
   private db: Database.Database | null = null;
+  private lastMaintenanceAt = 0;
 
   public constructor(options: StorageServiceOptions) {
     this.options = {
@@ -166,7 +170,8 @@ export class StorageService {
       cacheSize: options.cacheSize ?? 500,
     };
     this.queryCache = new LRUCache<string, CachedValue<unknown>>({
-      max: this.options.cacheSize,
+      max: StorageService.QUERY_CACHE_MAX_ENTRIES,
+      ttl: StorageService.QUERY_CACHE_TTL_MS,
     });
   }
 
@@ -230,6 +235,12 @@ export class StorageService {
       CREATE INDEX IF NOT EXISTS idx_requests_session_time
         ON requests(session_id, request_timestamp DESC);
 
+      CREATE INDEX IF NOT EXISTS idx_requests_session_url_time
+        ON requests(session_id, url, request_timestamp DESC);
+
+      CREATE INDEX IF NOT EXISTS idx_requests_session_method_time
+        ON requests(session_id, method, request_timestamp DESC);
+
       CREATE VIRTUAL TABLE IF NOT EXISTS requests_fts USING fts5(
         session_id UNINDEXED,
         request_id UNINDEXED,
@@ -254,6 +265,9 @@ export class StorageService {
 
       CREATE INDEX IF NOT EXISTS idx_script_chunks_session_script
         ON script_chunks(session_id, script_id, chunk_index);
+
+      CREATE INDEX IF NOT EXISTS idx_script_chunks_session_url
+        ON script_chunks(session_id, url, chunk_index);
 
       CREATE VIRTUAL TABLE IF NOT EXISTS script_chunks_fts USING fts5(
         session_id UNINDEXED,
@@ -315,7 +329,12 @@ export class StorageService {
 
       CREATE INDEX IF NOT EXISTS idx_llm_cache_semantic
         ON llm_cache(semantic_key, kind, provider, model, expires_at DESC);
+
+      CREATE INDEX IF NOT EXISTS idx_llm_cache_expires_at
+        ON llm_cache(expires_at);
     `);
+
+    database.pragma('optimize');
 
     this.db = database;
   }
@@ -331,6 +350,51 @@ export class StorageService {
     this.db.close();
     this.db = null;
     this.queryCache.clear();
+  }
+
+  public async cleanup(): Promise<{
+    deletedLlmCacheEntries: number;
+    optimized: boolean;
+    analyzed: boolean;
+    vacuumed: boolean;
+    walCheckpoint: boolean;
+    maintenancePerformed: boolean;
+  }> {
+    const db = this.getDb();
+    const now = Date.now();
+    const deleteExpired = db.prepare('DELETE FROM llm_cache WHERE expires_at <= ?').run(now);
+    let maintenanceDue = now - this.lastMaintenanceAt >= StorageService.MAINTENANCE_INTERVAL_MS;
+
+    let analyzed = false;
+    let vacuumed = false;
+    let walCheckpoint = false;
+
+    if (this.lastMaintenanceAt === 0) {
+      this.lastMaintenanceAt = now;
+      maintenanceDue = false;
+    }
+
+    if (maintenanceDue) {
+      db.exec('ANALYZE;');
+      analyzed = true;
+      db.exec('VACUUM;');
+      vacuumed = true;
+      db.pragma('wal_checkpoint(TRUNCATE)');
+      walCheckpoint = true;
+      this.lastMaintenanceAt = now;
+    }
+
+    db.pragma('optimize');
+    this.queryCache.clear();
+
+    return {
+      deletedLlmCacheEntries: deleteExpired.changes,
+      optimized: true,
+      analyzed,
+      vacuumed,
+      walCheckpoint,
+      maintenancePerformed: maintenanceDue,
+    };
   }
 
   /**

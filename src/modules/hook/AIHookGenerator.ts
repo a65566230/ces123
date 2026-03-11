@@ -10,6 +10,106 @@ export class AIHookGenerator {
         this.llm = options.llm;
         this.rag = options.rag;
     }
+    isValidIdentifier(value) {
+        return typeof value === 'string' && /^[A-Za-z_$][\w$]*$/.test(value);
+    }
+    isUsableFunctionName(value) {
+        return this.isValidIdentifier(value) && !['anonymous', 'arrow', '__commonJS', '__require'].includes(String(value));
+    }
+    isValidObjectPath(value) {
+        return typeof value === 'string' && /^(window|globalThis|self)(\.[A-Za-z_$][\w$]*)+$/.test(value);
+    }
+    deriveTargetFromObjectPath(path) {
+        if (!this.isValidObjectPath(path)) {
+            return null;
+        }
+        const match = String(path).match(/^(.*)\.([^.]+)$/);
+        if (!match || !this.isValidIdentifier(match[2])) {
+            return null;
+        }
+        return {
+            type: 'object-method',
+            object: match[1],
+            property: match[2],
+            name: match[2],
+        };
+    }
+    selectFallbackTarget(context) {
+        for (const candidate of context?.signatureCandidates || []) {
+            for (const objectPath of candidate.objectPaths || []) {
+                const normalized = this.deriveTargetFromObjectPath(objectPath);
+                if (normalized) {
+                    return normalized;
+                }
+            }
+            for (const ranked of candidate.rankedFunctions || []) {
+                if (this.isUsableFunctionName(ranked?.name)) {
+                    return {
+                        type: 'function',
+                        name: ranked.name,
+                    };
+                }
+            }
+        }
+        return {
+            type: 'api',
+            name: 'fetch',
+        };
+    }
+    normalizeTarget(target, context) {
+        if (!target || typeof target !== 'object') {
+            return this.selectFallbackTarget(context);
+        }
+        if (target.type === 'function') {
+            if (this.isUsableFunctionName(target.name)) {
+                return target;
+            }
+            return this.selectFallbackTarget(context);
+        }
+        if (target.type === 'object-method') {
+            if (this.isValidObjectPath(target.object) && this.isValidIdentifier(target.property || target.name)) {
+                return {
+                    ...target,
+                    property: target.property || target.name,
+                    name: target.name || target.property,
+                };
+            }
+            return this.selectFallbackTarget(context);
+        }
+        if (target.type === 'api') {
+            if (this.isUsableFunctionName(target.name)) {
+                return target;
+            }
+            return {
+                type: 'api',
+                name: 'fetch',
+            };
+        }
+        return target;
+    }
+    deriveCondition(request, target) {
+        if (request.condition) {
+            return request.condition;
+        }
+        if (target?.type !== 'api' || target?.name !== 'fetch') {
+            return request.condition;
+        }
+        const description = String(request.description || '').toLowerCase();
+        const previews = (request.context?.signatureCandidates || [])
+            .flatMap((candidate) => (candidate.rankedFunctions || []).map((ranked) => String(ranked.preview || '').toLowerCase()));
+        const combined = [description, ...previews].join('\n');
+        if (combined.includes('csrfwebtoken') || combined.includes('x-secsdk-csrf-token')) {
+            return {
+                argFilter: "String(JSON.stringify(args)).toLowerCase().includes('csrf') || String(JSON.stringify(args)).toLowerCase().includes('x-secsdk-csrf-token')",
+            };
+        }
+        if (combined.includes('signature') || combined.includes('nonce') || combined.includes('token')) {
+            return {
+                argFilter: "String(JSON.stringify(args)).toLowerCase().includes('signature') || String(JSON.stringify(args)).toLowerCase().includes('nonce') || String(JSON.stringify(args)).toLowerCase().includes('token')",
+            };
+        }
+        return request.condition;
+    }
     async planHookRequest(request) {
         if (request.target && request.behavior) {
             return {
@@ -87,9 +187,12 @@ export class AIHookGenerator {
             const planned = await this.planHookRequest(request);
             const normalizedRequest = {
                 ...request,
-                target: planned.target,
+                target: this.normalizeTarget(planned.target, request.context),
                 behavior: planned.behavior,
-                condition: request.condition || planned.condition,
+                condition: this.deriveCondition({
+                    ...request,
+                    condition: request.condition || planned.condition,
+                }, this.normalizeTarget(planned.target, request.context)),
             };
             let generatedCode = '';
             let explanation = '';
@@ -315,6 +418,21 @@ export class AIHookGenerator {
     ${condition?.urlPattern ? `
     const urlPattern = new RegExp('${condition.urlPattern}');
     if (!urlPattern.test(url)) {
+      return originalFetch.apply(this, args);
+    }
+    ` : ''}
+
+    ${condition?.argFilter ? `
+    const argFilterPassed = (function() {
+      try {
+        return ${condition.argFilter};
+      } catch (e) {
+        console.error('[${hookId}] Arg filter error:', e);
+        return true;
+      }
+    })();
+
+    if (!argFilterPassed) {
       return originalFetch.apply(this, args);
     }
     ` : ''}

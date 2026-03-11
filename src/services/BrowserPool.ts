@@ -1,5 +1,5 @@
-import puppeteer from 'puppeteer';
 import { chromium } from 'playwright-core';
+import { resolveChromiumExecutablePath } from '../utils/resolveChromiumExecutablePath.js';
 
 export interface BrowserPoolOptions {
   headless: boolean;
@@ -279,10 +279,9 @@ export class BrowserPool {
       return;
     }
 
-    const executablePath = this.options.executablePath || puppeteer.executablePath();
     this.browser = await chromium.launch({
       headless: this.options.headless,
-      executablePath,
+      executablePath: resolveChromiumExecutablePath(this.options.executablePath),
       args: this.options.launchArgs,
     });
   }

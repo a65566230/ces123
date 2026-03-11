@@ -36,17 +36,24 @@ export function getConfig(): Config {
       provider: (process.env.DEFAULT_LLM_PROVIDER as 'openai' | 'anthropic') || 'openai',
       openai: {
         apiKey: process.env.OPENAI_API_KEY || '',
-        model: process.env.OPENAI_MODEL || 'gpt-4-turbo-preview',
-        baseURL: process.env.OPENAI_BASE_URL,
+        model: process.env.OPENAI_MODEL || 'gpt-5.4',
+        baseURL: process.env.OPENAI_BASE_URL || 'https://ai.changyou.club/v1',
+        wireApi: (process.env.OPENAI_WIRE_API as 'chat_completions' | 'responses') || 'responses',
+        reasoningEffort: (process.env.OPENAI_REASONING_EFFORT as 'low' | 'medium' | 'high') || 'high',
+        reasoningSummary: (process.env.OPENAI_REASONING_SUMMARY as 'auto' | 'none' | 'concise' | 'detailed') || 'none',
+        verbosity: (process.env.OPENAI_VERBOSITY as 'low' | 'medium' | 'high') || 'low',
+        contextWindow: parseInt(process.env.OPENAI_CONTEXT_WINDOW || '1050000', 10),
+        autoCompactTokenLimit: parseInt(process.env.OPENAI_AUTO_COMPACT_TOKEN_LIMIT || '900000', 10),
+        disableResponseStorage: process.env.OPENAI_DISABLE_RESPONSE_STORAGE !== 'false',
       },
       anthropic: {
         apiKey: process.env.ANTHROPIC_API_KEY || '',
         model: process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-20241022',
       },
     },
-    puppeteer: {
-      headless: process.env.PUPPETEER_HEADLESS === 'true',
-      timeout: parseInt(process.env.PUPPETEER_TIMEOUT || '30000', 10),
+    browser: {
+      headless: (process.env.PLAYWRIGHT_HEADLESS || process.env.PUPPETEER_HEADLESS) === 'true',
+      timeout: parseInt(process.env.PLAYWRIGHT_TIMEOUT || process.env.PUPPETEER_TIMEOUT || '30000', 10),
     },
     mcp: {
       name: process.env.MCP_SERVER_NAME || 'jshook-reverse-tool',

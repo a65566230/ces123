@@ -1,16 +1,16 @@
 // @ts-nocheck
 
-import puppeteer from 'puppeteer-extra';
-import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import { chromium } from 'playwright-core';
 import { logger } from '../../utils/logger.js';
 import { CodeCache } from './CodeCache.js';
 import { SmartCodeCollector } from './SmartCodeCollector.js';
 import { CodeCompressor } from './CodeCompressor.js';
-import { buildNavigationPlan } from '../../server/v2/browser/navigation.js';
-puppeteer.use(StealthPlugin());
+import { buildNavigationPlan, toPlaywrightWaitUntil } from '../../server/v2/browser/navigation.js';
+import { resolveChromiumExecutablePath } from '../../utils/resolveChromiumExecutablePath.js';
 export class CodeCollector {
     config;
     browser = null;
+    context = null;
     collectedUrls = new Set();
     MAX_COLLECTED_URLS;
     MAX_FILES_PER_COLLECT;
@@ -93,8 +93,9 @@ export class CodeCollector {
         }
         await this.cache.init();
         logger.info('Initializing browser with anti-detection...');
-        this.browser = await puppeteer.launch({
+        this.browser = await chromium.launch({
             headless: this.config.headless,
+            executablePath: resolveChromiumExecutablePath(this.config.executablePath),
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -105,11 +106,15 @@ export class CodeCollector {
                 `--window-size=${this.viewport.width},${this.viewport.height}`,
                 '--ignore-certificate-errors',
             ],
-            defaultViewport: this.viewport,
+        });
+        this.context = await this.browser.newContext({
+            viewport: this.viewport,
+            userAgent: this.userAgent,
         });
         this.browser.on('disconnected', () => {
             logger.warn('⚠️  Browser disconnected');
             this.browser = null;
+            this.context = null;
             if (this.cdpSession) {
                 this.cdpSession = null;
                 this.cdpListeners = {};
@@ -119,6 +124,10 @@ export class CodeCollector {
     }
     async close() {
         await this.clearAllData();
+        if (this.context) {
+            await this.context.close();
+            this.context = null;
+        }
         if (this.browser) {
             await this.browser.close();
             this.browser = null;
@@ -129,9 +138,9 @@ export class CodeCollector {
         if (!this.browser) {
             await this.init();
         }
-        const pages = await this.browser.pages();
+        const pages = await this.context.pages();
         if (pages.length === 0) {
-            return await this.browser.newPage();
+            return await this.context.newPage();
         }
         const lastPage = pages[pages.length - 1];
         if (!lastPage) {
@@ -143,8 +152,7 @@ export class CodeCollector {
         if (!this.browser) {
             await this.init();
         }
-        const page = await this.browser.newPage();
-        await page.setUserAgent(this.userAgent);
+        const page = await this.context.newPage();
         await this.applyAntiDetection(page);
         if (url) {
             const plan = buildNavigationPlan({
@@ -152,15 +160,26 @@ export class CodeCollector {
                 timeout: this.config.timeout,
             });
             await page.goto(url, {
-                waitUntil: plan.attempts[0]?.waitUntil || 'domcontentloaded',
+                waitUntil: toPlaywrightWaitUntil(plan.attempts[0]?.waitUntil || 'domcontentloaded'),
                 timeout: plan.attempts[0]?.timeout || this.config.timeout,
             });
         }
         logger.info(`New page created${url ? `: ${url}` : ''}`);
         return page;
     }
+    async addInitScript(page, script) {
+        if (typeof page.addInitScript === 'function') {
+            await page.addInitScript(script);
+            return;
+        }
+        if (typeof page.evaluateOnNewDocument === 'function') {
+            await page.evaluateOnNewDocument(script);
+            return;
+        }
+        throw new Error('Page does not support init scripts');
+    }
     async applyAntiDetection(page) {
-        await page.evaluateOnNewDocument(() => {
+        await this.addInitScript(page, () => {
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => false,
             });
@@ -195,7 +214,7 @@ export class CodeCollector {
             };
         }
         try {
-            const pages = await this.browser.pages();
+            const pages = await this.context.pages();
             const version = await this.browser.version();
             return {
                 running: true,
@@ -225,13 +244,12 @@ export class CodeCollector {
         if (!this.browser) {
             throw new Error('Browser not initialized');
         }
-        const page = await this.browser.newPage();
+        const page = await this.context.newPage();
         try {
             page.setDefaultTimeout(options.timeout || this.config.timeout);
-            await page.setUserAgent(this.userAgent);
             await this.applyAntiDetection(page);
             const files = [];
-            this.cdpSession = await page.createCDPSession();
+            this.cdpSession = await this.context.newCDPSession(page);
             await this.cdpSession.send('Network.enable');
             await this.cdpSession.send('Runtime.enable');
             this.cdpListeners.responseReceived = async (params) => {
@@ -626,7 +644,7 @@ export class CodeCollector {
                 for (const attempt of plan.attempts) {
                     try {
                         await page.goto(url, {
-                            waitUntil: attempt.waitUntil,
+                            waitUntil: toPlaywrightWaitUntil(attempt.waitUntil),
                             timeout: attempt.timeout,
                         });
                         return;

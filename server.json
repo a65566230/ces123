@@ -1,9 +1,9 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
-  "name": "io.github.wuji66dde/jshook-reverse-tool",
-  "description": "Structured MCP toolkit for JavaScript reverse engineering with workflow-first tools, session tracking, and dual browser engines",
-  "version": "2.0.0",
-  "homepage": "https://github.com/wuji66dde/jshook-reverse-tool#readme",
+  "name": "io.github.a65566230/jshook-reverse-tool",
+  "description": "Structured MCP toolkit for JavaScript reverse engineering with workflow-first tools, session tracking, and a Playwright-backed browser pool",
+  "version": "2.0.1",
+  "homepage": "https://github.com/a65566230/ces123#readme",
   "license": "MIT",
   "keywords": [
     "mcp",
@@ -15,8 +15,6 @@
     "crypto-detection",
     "hook",
     "ai-powered",
-    "puppeteer",
-    "chrome-devtools",
     "network-monitoring",
     "anti-detection",
     "captcha"
@@ -25,15 +23,15 @@
     {
       "registry_type": "npm",
       "identifier": "jshook-reverse-tool",
-      "version": "2.0.0"
+      "version": "2.0.1"
     }
   ],
   "author": {
-    "name": "wuji66dde",
-    "url": "https://github.com/wuji66dde"
+    "name": "a65566230",
+    "url": "https://github.com/a65566230"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/wuji66dde/jshook-reverse-tool.git"
+    "url": "https://github.com/a65566230/ces123.git"
   }
 }

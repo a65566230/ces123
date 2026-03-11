@@ -27,7 +27,7 @@ async function ensureSessionCapability(runtime, session, capability) {
     if (!session) {
         return session;
     }
-    if (session.autoEngine === true && session.engineType !== 'puppeteer' && ['script-search', 'script-source', 'function-tree', 'debugger'].includes(capability)) {
+    if (session.autoEngine === true && session.engineType !== 'playwright' && ['script-search', 'script-source', 'function-tree', 'debugger'].includes(capability)) {
         return runtime.sessions.maybeUpgradeSessionEngine(session.sessionId, capability);
     }
     return session;
@@ -95,6 +95,54 @@ async function hydrateScriptInventory(session, options = {}) {
         includeSource,
         maxScripts,
     });
+}
+function findScriptMetadataMatches(scripts, keyword, maxResults = 20) {
+    const normalized = String(keyword || '').toLowerCase().trim();
+    if (!normalized) {
+        return [];
+    }
+    return scripts
+        .filter((script) => String(script.url || '').toLowerCase().includes(normalized) || String(script.scriptId || '').toLowerCase().includes(normalized))
+        .slice(0, maxResults)
+        .map((script) => ({
+        scriptId: script.scriptId,
+        url: script.url,
+        chunkRef: undefined,
+        chunkIndex: undefined,
+        context: `metadata match: ${script.url || script.scriptId}`,
+        sourceLoaded: typeof script.source === 'string',
+    }));
+}
+async function resolveReportFingerprintCandidates(session, runtime) {
+    const manifestScripts = await hydrateScriptInventory(session, {
+        includeSource: false,
+        indexPolicy: 'metadata-only',
+        maxScripts: 20,
+    });
+    const candidates = manifestScripts
+        .filter((script) => typeof script.url === 'string' && script.url.length > 0)
+        .sort((left, right) => (left.sourceLength || 0) - (right.sourceLength || 0))
+        .slice(0, 4);
+    const resolved = [];
+    for (const candidate of candidates) {
+        try {
+            const sourcePayload = await resolveScriptSource(session, {
+                scriptId: candidate.scriptId,
+                url: candidate.url,
+            });
+            if (sourcePayload?.source) {
+                resolved.push({
+                    scriptId: candidate.scriptId,
+                    url: candidate.url,
+                    fingerprint: runtime.bundleFingerprints.fingerprint(sourcePayload.source),
+                    rankedFunctions: runtime.functionRanker.rank(sourcePayload.source).slice(0, 3),
+                });
+            }
+        }
+        catch (_error) {
+        }
+    }
+    return resolved;
 }
 async function resolveScriptSource(session, args) {
     if (typeof args.code === 'string') {
@@ -167,9 +215,9 @@ async function resolveScriptSource(session, args) {
         scriptId: match.scriptId,
     };
 }
-function requirePuppeteerFeatures(session, capability) {
+function requirePlaywrightFeatures(session, capability) {
     if (!session.pageController || !session.domInspector || !session.consoleMonitor) {
-        return `${capability} currently requires a Puppeteer-backed session`;
+        return `${capability} currently requires an active Playwright-backed session`;
     }
     return null;
 }
@@ -184,7 +232,7 @@ const blueprints = [
             properties: {
                 engine: {
                     type: 'string',
-                    enum: ['auto', 'puppeteer', 'playwright'],
+                    enum: ['auto', 'playwright'],
                     description: 'Browser engine to use for the new session',
                 },
                 label: {
@@ -250,11 +298,11 @@ const blueprints = [
         name: 'browser.recover',
         group: 'browser',
         lifecycle: 'session-required',
-        description: 'Recover a browser session from the latest snapshot or upgrade it to a more capable engine.',
+        description: 'Recover a browser session from the latest snapshot in the Playwright pool.',
         inputSchema: sessionSchema({
             engine: {
                 type: 'string',
-                enum: ['auto', 'puppeteer', 'playwright'],
+                enum: ['auto', 'playwright'],
             },
             reason: {
                 type: 'string',
@@ -327,7 +375,7 @@ const blueprints = [
             },
             enableNetworkCapture: {
                 type: 'boolean',
-                description: 'For Puppeteer sessions, enable request capture before navigation',
+                description: 'Enable request capture before navigation',
             },
         }, ['url']),
         createHandler(runtime) {
@@ -360,7 +408,7 @@ const blueprints = [
         name: 'inspect.dom',
         group: 'inspect',
         lifecycle: 'session-required',
-        description: 'Inspect DOM state for a Puppeteer-backed session.',
+        description: 'Inspect DOM state for a Playwright-backed session.',
         inputSchema: sessionSchema({
             action: {
                 type: 'string',
@@ -386,7 +434,7 @@ const blueprints = [
                     return errorResponse('Session not found', new Error('Unknown sessionId'));
                 }
                 session = await ensureSessionCapability(runtime, session, 'debugger');
-                const unsupported = requirePuppeteerFeatures(session, 'inspect.dom');
+                const unsupported = requirePlaywrightFeatures(session, 'inspect.dom');
                 if (unsupported) {
                     return errorResponse('Unsupported session engine', new Error(unsupported), {
                         sessionId: session.sessionId,
@@ -522,11 +570,31 @@ const blueprints = [
                         break;
                     case 'search':
                         enforceRateLimit(runtime, session.sessionId, 'inspect.scripts.search');
-                        await hydrateScriptInventory(session, {
-                            includeSource: true,
-                            indexPolicy: args.indexPolicy || 'deep',
+                        const metadataScripts = await hydrateScriptInventory(session, {
+                            includeSource: false,
+                            indexPolicy: args.indexPolicy || 'metadata-only',
                             maxScripts: 250,
                         });
+                        if (typeof args.keyword === 'string' && args.keyword.length > 0) {
+                            const metadataMatches = findScriptMetadataMatches(metadataScripts, args.keyword, typeof args.maxResults === 'number' ? args.maxResults : 100);
+                            if (metadataMatches.length > 0) {
+                                const paged = paginateItems(metadataMatches, {
+                                    page: typeof args.page === 'number' ? args.page : undefined,
+                                    pageSize: typeof args.pageSize === 'number' ? args.pageSize : undefined,
+                                    cursor: typeof args.cursor === 'string' ? args.cursor : undefined,
+                                });
+                                result = {
+                                    keyword: String(args.keyword || ''),
+                                    searchMode: 'metadata',
+                                    totalMatches: metadataMatches.length,
+                                    truncated: false,
+                                    executionMode: 'metadata',
+                                    matches: paged.items,
+                                    page: paged.page,
+                                };
+                                break;
+                            }
+                        }
                         if (runtime.storage && typeof args.keyword === 'string' && args.keyword.length > 0) {
                             const stored = await runtime.storage.searchScriptChunks({
                                 sessionId: session.sessionId,
@@ -556,9 +624,15 @@ const blueprints = [
                                 };
                             }
                             else {
+                                const sourceSearchLimit = Math.min(80, Math.max(typeof args.maxResults === 'number' ? args.maxResults * 8 : 80, 20));
+                                await hydrateScriptInventory(session, {
+                                    includeSource: true,
+                                    indexPolicy: args.indexPolicy || 'deep',
+                                    maxScripts: sourceSearchLimit,
+                                });
                                 const scriptsForWorker = session.scriptInventory.list({
                                     includeSource: true,
-                                    maxScripts: 250,
+                                    maxScripts: sourceSearchLimit,
                                 }).filter((item) => typeof item.source === 'string');
                                 const workerResult = await runtime.workerService.runSearchTask({
                                     keyword: String(args.keyword || ''),
@@ -585,9 +659,15 @@ const blueprints = [
                         }
                         else {
                             enforceRateLimit(runtime, session.sessionId, 'inspect.scripts.search');
+                            const sourceSearchLimit = Math.min(80, Math.max(typeof args.maxResults === 'number' ? args.maxResults * 8 : 80, 20));
+                            await hydrateScriptInventory(session, {
+                                includeSource: true,
+                                indexPolicy: args.indexPolicy || 'deep',
+                                maxScripts: sourceSearchLimit,
+                            });
                             const scriptsForWorker = session.scriptInventory.list({
                                 includeSource: true,
-                                maxScripts: 250,
+                                maxScripts: sourceSearchLimit,
                             }).filter((item) => typeof item.source === 'string');
                             const workerResult = await runtime.workerService.runSearchTask({
                                 keyword: String(args.keyword || ''),
@@ -614,7 +694,7 @@ const blueprints = [
                         break;
                     case 'function-tree':
                         if (!session.scriptManager) {
-                            return errorResponse('Unsupported session engine', new Error('Function tree extraction requires a Puppeteer-backed session'));
+                            return errorResponse('Unsupported session engine', new Error('Function tree extraction requires a Playwright-backed session'));
                         }
                         {
                             const sourcePayload = await resolveScriptSource(session, args);
@@ -791,7 +871,7 @@ const blueprints = [
         name: 'debug.control',
         group: 'debug',
         lifecycle: 'session-required',
-        description: 'Enable or control the debugger for a Puppeteer-backed session.',
+        description: 'Enable or control the debugger for a Playwright-backed session.',
         inputSchema: sessionSchema({
             action: {
                 type: 'string',
@@ -805,7 +885,7 @@ const blueprints = [
                     return errorResponse('Session not found', new Error('Unknown sessionId'));
                 }
                 if (!session.debuggerManager || !session.runtimeInspector) {
-                    return errorResponse('Unsupported session engine', new Error('Debugging requires a Puppeteer-backed session'));
+                    return errorResponse('Unsupported session engine', new Error('Debugging requires a Playwright-backed session'));
                 }
                 switch (args.action) {
                     case 'enable':
@@ -865,7 +945,7 @@ const blueprints = [
                     return errorResponse('Session not found', new Error('Unknown sessionId'));
                 }
                 if (!session.runtimeInspector) {
-                    return errorResponse('Unsupported session engine', new Error('Debugger evaluation requires a Puppeteer-backed session'));
+                    return errorResponse('Unsupported session engine', new Error('Debugger evaluation requires a Playwright-backed session'));
                 }
                 await session.runtimeInspector.init();
                 const result = typeof args.callFrameId === 'string'
@@ -1390,7 +1470,7 @@ const blueprints = [
                 },
                 engine: {
                     type: 'string',
-                    enum: ['auto', 'puppeteer', 'playwright'],
+                    enum: ['auto', 'playwright'],
                 },
                 url: {
                     type: 'string',
@@ -1668,19 +1748,7 @@ const blueprints = [
                     return errorResponse('Session not found', new Error('Unknown sessionId'));
                 }
                 const status = buildStatusPayload(session, await session.engine.getStatus());
-                const scripts = await hydrateScriptInventory(session, {
-                    includeSource: true,
-                    indexPolicy: 'deep',
-                    maxScripts: 8,
-                });
-                const fingerprints = scripts
-                    .filter((script) => script.source)
-                    .map((script) => ({
-                    scriptId: script.scriptId,
-                    url: script.url,
-                    fingerprint: runtime.bundleFingerprints.fingerprint(script.source),
-                    rankedFunctions: runtime.functionRanker.rank(script.source).slice(0, 3),
-                }));
+                const fingerprints = await resolveReportFingerprintCandidates(session, runtime);
                 const report = {
                     session: {
                         sessionId: session.sessionId,

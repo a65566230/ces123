@@ -91,27 +91,8 @@ export class LLMService {
                 cached: true,
             };
         }
-        if (this.config.provider === 'openai' && !this.openai) {
-            logger.warn('OpenAI client unavailable, returning deterministic degraded response');
-            return {
-                content: this.createDegradedResponse(messages),
-                usage: {
-                    promptTokens: 0,
-                    completionTokens: 0,
-                    totalTokens: 0,
-                },
-            };
-        }
-        if (this.config.provider === 'anthropic' && !this.anthropic) {
-            logger.warn('Anthropic client unavailable, returning deterministic degraded response');
-            return {
-                content: this.createDegradedResponse(messages),
-                usage: {
-                    promptTokens: 0,
-                    completionTokens: 0,
-                    totalTokens: 0,
-                },
-            };
+        if (!this.remoteExecutor) {
+            this.assertClientConfigured();
         }
         const response = await this.withRetry(async () => {
             const startTime = Date.now();
@@ -152,14 +133,7 @@ export class LLMService {
         if (cached) {
             return cached.content;
         }
-        if (this.config.provider === 'openai' && !this.openai) {
-            logger.warn('OpenAI image analysis unavailable, returning degraded message');
-            return this.createDegradedVisionResponse(prompt);
-        }
-        if (this.config.provider === 'anthropic' && !this.anthropic) {
-            logger.warn('Anthropic image analysis unavailable, returning degraded message');
-            return this.createDegradedVisionResponse(prompt);
-        }
+        this.assertClientConfigured();
         return this.withRetry(async () => {
             const startTime = Date.now();
             try {
@@ -170,46 +144,40 @@ export class LLMService {
                     imageBase64 = imageBuffer.toString('base64');
                     logger.info(`✅ 图片文件已读取 (${(imageBuffer.length / 1024).toFixed(2)} KB)`);
                 }
-                else {
+                else if (typeof imageInput === 'string') {
                     imageBase64 = imageInput;
+                }
+                else {
+                    imageBase64 = Buffer.from(imageInput).toString('base64');
                 }
                 if (this.config.provider === 'openai') {
                     if (!this.openai) {
                         throw new Error('OpenAI client not initialized');
                     }
-                    const model = this.config.openai?.model || 'gpt-4-vision-preview';
-                    const isVisionModel = model.includes('vision') || model.includes('gpt-4o') || model.includes('gpt-4-turbo');
-                    if (!isVisionModel) {
-                        logger.warn(`⚠️ 当前模型 ${model} 不支持图片分析，建议使用 gpt-4-vision-preview 或 gpt-4o`);
-                        throw new Error(`Model ${model} does not support image analysis. ` +
-                            `Please use gpt-4-vision-preview, gpt-4o, or gpt-4-turbo. ` +
-                            `Current config: OPENAI_MODEL=${model}, OPENAI_BASE_URL=${this.config.openai?.baseURL || 'default'}`);
-                    }
-                    logger.info(`🖼️ Using OpenAI Vision model: ${model}`);
-                    const response = await this.openai.chat.completions.create({
-                        model,
-                        messages: [
-                            {
-                                role: 'user',
-                                content: [
-                                    { type: 'text', text: prompt },
-                                    {
-                                        type: 'image_url',
-                                        image_url: {
-                                            url: `data:image/png;base64,${imageBase64}`,
-                                        },
-                                    },
-                                ],
-                            },
-                        ],
-                        max_tokens: 1000,
-                    });
-                    const content = response.choices[0]?.message?.content || '';
+                    const model = this.config.openai?.model || 'gpt-5.4';
+                    logger.info(`🖼️ Using OpenAI Responses vision model: ${model}`);
+                    const response = await this.callOpenAIResponses(this.buildOpenAIResponsesRequest([
+                        { role: 'user', content: prompt },
+                    ], {
+                        maxTokens: 1000,
+                    }, [
+                        {
+                            role: 'user',
+                            content: [
+                                { type: 'input_text', text: prompt },
+                                {
+                                    type: 'input_image',
+                                    image_url: `data:image/png;base64,${imageBase64}`,
+                                },
+                            ],
+                        },
+                    ]));
+                    const content = this.extractOpenAIResponseText(response);
                     await this.storeCachedChatResult(cacheKey, semanticKey, [{ role: 'user', content: prompt }], {
                         content,
                         usage: {
-                            promptTokens: response.usage?.prompt_tokens,
-                            completionTokens: response.usage?.completion_tokens,
+                            promptTokens: response.usage?.input_tokens,
+                            completionTokens: response.usage?.output_tokens,
                             totalTokens: response.usage?.total_tokens,
                         },
                     }, 'vision');
@@ -318,6 +286,14 @@ export class LLMService {
         ];
         return retryableErrors.some((pattern) => message.includes(pattern));
     }
+    assertClientConfigured() {
+        if (this.config.provider === 'openai' && !this.openai) {
+            throw new Error('OpenAI client is not configured. Set OPENAI_API_KEY or provide a remoteExecutor.');
+        }
+        if (this.config.provider === 'anthropic' && !this.anthropic) {
+            throw new Error('Anthropic client is not configured. Set ANTHROPIC_API_KEY or provide a remoteExecutor.');
+        }
+    }
     createDegradedResponse(messages) {
         const lastUserMessage = [...messages].reverse().find((message) => message.role === 'user')?.content || '';
         return JSON.stringify({
@@ -337,7 +313,7 @@ export class LLMService {
     computePromptCacheKey(messages, options = {}, kind = 'chat') {
         const provider = this.config.provider;
         const model = provider === 'openai'
-            ? this.config.openai?.model || 'gpt-4-turbo-preview'
+            ? this.config.openai?.model || 'gpt-5.4'
             : this.config.anthropic?.model || 'claude-3-5-sonnet-20241022';
         return crypto
             .createHash('sha256')
@@ -379,7 +355,7 @@ export class LLMService {
             kind: 'chat',
             provider: this.config.provider,
             model: this.config.provider === 'openai'
-                ? this.config.openai?.model || 'gpt-4-turbo-preview'
+                ? this.config.openai?.model || 'gpt-5.4'
                 : this.config.anthropic?.model || 'claude-3-5-sonnet-20241022',
         });
         if (semanticHit?.responseText) {
@@ -408,7 +384,7 @@ export class LLMService {
                 kind,
                 provider: this.config.provider,
                 model: this.config.provider === 'openai'
-                    ? this.config.openai?.model || 'gpt-4-turbo-preview'
+                    ? this.config.openai?.model || 'gpt-5.4'
                     : this.config.anthropic?.model || 'claude-3-5-sonnet-20241022',
                 promptPreview: JSON.stringify(messages).slice(0, 500),
                 responseText: response.content,
@@ -448,7 +424,7 @@ export class LLMService {
                 kind,
                 provider: this.config.provider,
                 model: this.config.provider === 'openai'
-                    ? this.config.openai?.model || 'gpt-4-turbo-preview'
+                    ? this.config.openai?.model || 'gpt-5.4'
                     : this.config.anthropic?.model || 'claude-3-5-sonnet-20241022',
                 promptPreview: cacheKey,
                 responseText: JSON.stringify(value),
@@ -462,8 +438,21 @@ export class LLMService {
         if (!this.openai) {
             throw new Error('OpenAI client not initialized');
         }
+        if ((this.config.openai?.wireApi || 'responses') === 'responses') {
+            const response = await this.callOpenAIResponses(this.buildOpenAIResponsesRequest(messages, options));
+            return {
+                content: this.extractOpenAIResponseText(response),
+                usage: response.usage
+                    ? {
+                        promptTokens: response.usage.input_tokens,
+                        completionTokens: response.usage.output_tokens,
+                        totalTokens: response.usage.total_tokens,
+                    }
+                    : undefined,
+            };
+        }
         const response = await this.openai.chat.completions.create({
-            model: this.config.openai?.model || 'gpt-4-turbo-preview',
+            model: this.config.openai?.model || 'gpt-5.4',
             messages: messages.map((msg) => ({
                 role: msg.role,
                 content: msg.content,
@@ -514,6 +503,165 @@ export class LLMService {
                 totalTokens: response.usage.input_tokens + response.usage.output_tokens,
             },
         };
+    }
+    buildOpenAIResponsesRequest(messages, options, responseInput) {
+        const instructions = messages
+            .filter((message) => message.role === 'system')
+            .map((message) => message.content)
+            .join('\n\n') || undefined;
+        const input = responseInput || messages
+            .filter((message) => message.role !== 'system')
+            .map((message) => ({
+            role: message.role,
+            content: [
+                {
+                    type: 'input_text',
+                    text: message.content,
+                },
+            ],
+        }));
+        const request = {
+            model: this.config.openai?.model || 'gpt-5.4',
+            input,
+            instructions,
+            max_output_tokens: options?.maxTokens ?? 4000,
+            stream: true,
+            store: this.config.openai?.disableResponseStorage === true ? false : undefined,
+        };
+        if (this.config.openai?.reasoningEffort || this.config.openai?.reasoningSummary) {
+            request.reasoning = {
+                effort: this.config.openai?.reasoningEffort || 'high',
+            };
+            if (this.config.openai?.reasoningSummary && this.config.openai.reasoningSummary !== 'none') {
+                request.reasoning.summary = this.config.openai.reasoningSummary;
+            }
+        }
+        if (this.config.openai?.verbosity) {
+            request.text = {
+                verbosity: this.config.openai.verbosity,
+            };
+        }
+        return request;
+    }
+    async callOpenAIResponses(request) {
+        const baseUrl = this.config.openai?.baseURL || 'https://api.openai.com/v1';
+        const apiKey = this.config.openai?.apiKey;
+        const response = await fetch(`${baseUrl.replace(/\/+$/, '')}/responses`, {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+                authorization: `Bearer ${apiKey}`,
+            },
+            body: JSON.stringify(request),
+        });
+        if (!response.ok) {
+            const detail = await response.text();
+            throw new Error(`OpenAI Responses request failed: ${response.status} ${detail}`);
+        }
+        const contentType = response.headers.get('content-type') || '';
+        if (contentType.includes('text/event-stream')) {
+            return await this.parseOpenAIResponsesStream(response);
+        }
+        return await response.json();
+    }
+    async parseOpenAIResponsesStream(response) {
+        const reader = response.body?.getReader();
+        if (!reader) {
+            throw new Error('OpenAI Responses stream did not include a readable body');
+        }
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let aggregatedText = '';
+        let completedResponse = null;
+        let eventData = [];
+        const flushEvent = (rawData) => {
+            if (!rawData) {
+                return;
+            }
+            const payload = JSON.parse(rawData);
+            if (payload.error) {
+                throw new Error(payload.detail || JSON.stringify(payload.error));
+            }
+            if (payload.type === 'response.output_text.delta') {
+                aggregatedText += payload.delta || '';
+            }
+            if (payload.type === 'response.completed') {
+                completedResponse = payload.response;
+            }
+        };
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) {
+                break;
+            }
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split(/\r?\n/);
+            buffer = lines.pop() || '';
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed) {
+                    if (eventData.length > 0) {
+                        flushEvent(eventData.join('\n'));
+                        eventData = [];
+                    }
+                    continue;
+                }
+                if (trimmed.startsWith(':')) {
+                    continue;
+                }
+                if (trimmed.startsWith('event:')) {
+                    continue;
+                }
+                if (trimmed.startsWith('data:')) {
+                    eventData.push(trimmed.slice(5).trim());
+                    continue;
+                }
+                if (trimmed.startsWith('{')) {
+                    eventData.push(trimmed);
+                }
+            }
+        }
+        if (buffer.trim()) {
+            eventData.push(buffer.trim());
+        }
+        if (eventData.length > 0) {
+            flushEvent(eventData.join('\n'));
+        }
+        if (completedResponse) {
+            return completedResponse;
+        }
+        return {
+            output: [
+                {
+                    type: 'message',
+                    content: [
+                        {
+                            type: 'output_text',
+                            text: aggregatedText.trim(),
+                        },
+                    ],
+                },
+            ],
+            output_text: aggregatedText.trim(),
+        };
+    }
+    extractOpenAIResponseText(response) {
+        if (typeof response.output_text === 'string' && response.output_text.length > 0) {
+            return response.output_text;
+        }
+        const segments = [];
+        for (const item of response.output || []) {
+            for (const content of item.content || []) {
+                if (typeof content.text === 'string') {
+                    segments.push(content.text);
+                }
+            }
+        }
+        const merged = segments.join('\n').trim();
+        if (!merged) {
+            throw new Error('No response from OpenAI');
+        }
+        return merged;
     }
     generateCodeAnalysisPrompt(code, focus) {
         const systemPrompt = `# Role

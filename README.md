@@ -1,6 +1,8 @@
-# JSHook Reverse Tool v2
+# JSHook Reverse Tool v2 (a65566230 fork)
 
 Structured MCP tooling for authorized JavaScript reverse engineering, browser debugging, hook generation, and evidence-driven analysis.
+
+This repository is the `a65566230/ces123` fork and ships a Playwright-only v2 runtime.
 
 Version 2 is a breaking upgrade focused on three goals:
 
@@ -12,7 +14,7 @@ Version 2 is a breaking upgrade focused on three goals:
 
 - Thin `V2MCPServer` with a layered runtime: tool registry, tool executor, session lifecycle, and capability modules.
 - Workflow-first tool surface grouped into `browser.*`, `inspect.*`, `debug.*`, `analyze.*`, `hook.*`, and `flow.*`.
-- Dual browser engine abstraction with Puppeteer and Playwright adapters behind a shared `BrowserEngine` interface.
+- A Playwright-backed browser pool with workflow-first runtime compatibility layers.
 - Structured response envelope for every v2 tool:
 
 ```json
@@ -89,7 +91,7 @@ Example `claude_desktop_config.json` entry:
       "env": {
         "DEFAULT_LLM_PROVIDER": "openai",
         "OPENAI_API_KEY": "sk-...",
-        "BROWSER_ENGINE": "puppeteer"
+        "PLAYWRIGHT_EXECUTABLE_PATH": "/path/to/chrome-or-edge"
       }
     }
   }
@@ -121,7 +123,8 @@ Start from [`.env.example`](./.env.example). The most important settings are:
 
 - `DEFAULT_LLM_PROVIDER`
 - `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`
-- `BROWSER_ENGINE`
+- `OPENAI_BASE_URL` for custom OpenAI-compatible gateways such as `https://ai.changyou.club/v1`
+- `OPENAI_WIRE_API=responses` when using the GPT-5.4 custom profile
 - `ENABLE_LEGACY_TOOLS`
 - `PLAYWRIGHT_EXECUTABLE_PATH` when Playwright cannot auto-resolve Chromium
 
@@ -143,7 +146,7 @@ npm run check
 ## Test strategy
 
 - unit tests for envelopes, tool catalog, and analysis helpers
-- integration tests for Puppeteer and Playwright flows
+- integration tests for Playwright-backed flows
 - local fixtures for:
   - basic pages
   - source-map bundles

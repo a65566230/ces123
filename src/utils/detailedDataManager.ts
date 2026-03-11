@@ -4,13 +4,15 @@ import { logger } from './logger.js';
 export class DetailedDataManager {
     static instance;
     cache = new Map();
+    cleanupTimer;
     DEFAULT_TTL = 30 * 60 * 1000;
     MAX_TTL = 60 * 60 * 1000;
     MAX_CACHE_SIZE = 100;
     AUTO_EXTEND_ON_ACCESS = true;
     EXTEND_DURATION = 15 * 60 * 1000;
     constructor() {
-        setInterval(() => this.cleanup(), 5 * 60 * 1000);
+        this.cleanupTimer = setInterval(() => this.cleanup(), 5 * 60 * 1000);
+        this.cleanupTimer.unref?.();
     }
     static getInstance() {
         if (!this.instance) {
@@ -201,6 +203,12 @@ export class DetailedDataManager {
     clear() {
         this.cache.clear();
         logger.info('Cleared all detailed data cache');
+    }
+    shutdown() {
+        if (this.cleanupTimer) {
+            clearInterval(this.cleanupTimer);
+            this.cleanupTimer = undefined;
+        }
     }
 }
 //# sourceMappingURL=detailedDataManager.js.map

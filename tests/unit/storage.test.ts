@@ -79,4 +79,67 @@ describe('StorageService', () => {
     const chunk = await storage.getScriptChunk('session-storage-2', 'script-1:0');
     expect(chunk?.content).toContain('signer');
   });
+
+  test('cleanup removes expired llm cache rows and keeps fresh entries', async () => {
+    const dbPath = await createTempDbPath('cleanup');
+    const storage = new StorageService({
+      databasePath: dbPath,
+      cacheSize: 2,
+    });
+
+    await storage.init();
+    await storage.setLlmCacheEntry({
+      cacheKey: 'expired-entry',
+      semanticKey: 'semantic-expired',
+      kind: 'chat',
+      provider: 'openai',
+      model: 'gpt-4o-mini',
+      promptPreview: 'expired',
+      responseText: 'expired',
+      createdAt: Date.now() - 10_000,
+      expiresAt: Date.now() - 1_000,
+    });
+    await storage.setLlmCacheEntry({
+      cacheKey: 'fresh-entry',
+      semanticKey: 'semantic-fresh',
+      kind: 'chat',
+      provider: 'openai',
+      model: 'gpt-4o-mini',
+      promptPreview: 'fresh',
+      responseText: 'fresh',
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 60_000,
+    });
+
+    const result = await storage.cleanup();
+
+    expect(result.deletedLlmCacheEntries).toBe(1);
+    expect(result.maintenancePerformed).toBe(false);
+    expect(result.vacuumed).toBe(false);
+    expect(result.analyzed).toBe(false);
+    await expect(storage.getLlmCacheEntry('expired-entry')).resolves.toBeNull();
+    await expect(storage.getLlmCacheEntry('fresh-entry')).resolves.toMatchObject({
+      responseText: 'fresh',
+    });
+  });
+
+  test('cleanup performs heavy maintenance only after the maintenance window elapses', async () => {
+    const dbPath = await createTempDbPath('maintenance-window');
+    const storage = new StorageService({
+      databasePath: dbPath,
+      cacheSize: 2,
+    });
+
+    await storage.init();
+    const first = await storage.cleanup();
+    expect(first.maintenancePerformed).toBe(false);
+
+    // Simulate a stale maintenance clock without waiting a week in real time.
+    (storage as unknown as { lastMaintenanceAt: number }).lastMaintenanceAt = Date.now() - (8 * 24 * 60 * 60 * 1000);
+    const second = await storage.cleanup();
+
+    expect(second.maintenancePerformed).toBe(true);
+    expect(second.vacuumed).toBe(true);
+    expect(second.analyzed).toBe(true);
+  });
 });

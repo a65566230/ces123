@@ -60,7 +60,7 @@ export class MCPServer {
     hookManager;
     constructor(config) {
         this.cache = new CacheManager(config.cache);
-        this.collector = new CodeCollector(config.puppeteer);
+        this.collector = new CodeCollector(config.browser);
         this.pageController = new PageController(this.collector);
         this.domInspector = new DOMInspector(this.collector);
         this.scriptManager = new ScriptManager(this.collector);

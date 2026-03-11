@@ -1,8 +1,8 @@
 {
   "name": "jshook-reverse-tool",
-  "version": "2.0.0",
-  "description": "Structured MCP toolkit for JavaScript reverse engineering with workflow-first tools, session tracking, and dual browser engines",
-  "mcpName": "io.github.wuji66dde/jshook-reverse-tool",
+  "version": "2.0.1",
+  "description": "Structured MCP toolkit for JavaScript reverse engineering with workflow-first tools, session tracking, and a Playwright-backed browser pool",
+  "mcpName": "io.github.a65566230/jshook-reverse-tool",
   "main": "dist/index.js",
   "type": "module",
   "bin": {
@@ -14,16 +14,16 @@
     "LICENSE",
     "server.json",
     ".env.example",
-    "skills/jshook-reverse-operator"
+    "skills"
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/wuji66dde/jshook-reverse-tool.git"
+    "url": "https://github.com/a65566230/ces123.git"
   },
   "bugs": {
-    "url": "https://github.com/wuji66dde/jshook-reverse-tool/issues"
+    "url": "https://github.com/a65566230/ces123/issues"
   },
-  "homepage": "https://github.com/wuji66dde/jshook-reverse-tool#readme",
+  "homepage": "https://github.com/a65566230/ces123#readme",
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
@@ -55,8 +55,6 @@
     "deobfuscation",
     "ai",
     "claude",
-    "puppeteer",
-    "chrome-devtools",
     "debugger",
     "runtime-analysis",
     "source-maps",
@@ -70,8 +68,8 @@
     "agent-skill"
   ],
   "author": {
-    "name": "wuji66dde",
-    "url": "https://github.com/wuji66dde"
+    "name": "a65566230",
+    "url": "https://github.com/a65566230"
   },
   "license": "MIT",
   "dependencies": {
@@ -88,10 +86,7 @@
     "lru-cache": "^10.4.3",
     "openai": "^4.73.0",
     "ora": "^8.1.1",
-    "playwright-core": "^1.53.1",
-    "puppeteer": "^23.10.4",
-    "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2"
+    "playwright-core": "^1.53.1"
   },
   "devDependencies": {
     "@types/babel__generator": "^7.6.8",

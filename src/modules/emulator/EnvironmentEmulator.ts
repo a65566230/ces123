@@ -2,13 +2,13 @@
 
 import * as parser from '@babel/parser';
 import traverse from '@babel/traverse';
+import { chromium } from 'playwright-core';
 import { logger } from '../../utils/logger.js';
 import { chromeEnvironmentTemplate } from './templates/chrome-env.js';
-import puppeteer from 'puppeteer-extra';
-import StealthPlugin from 'puppeteer-extra-plugin-stealth';
-puppeteer.use(StealthPlugin());
+import { resolveChromiumExecutablePath } from '../../utils/resolveChromiumExecutablePath.js';
 export class EnvironmentEmulator {
     browser;
+    context;
     llm;
     constructor(llm) {
         this.llm = llm;
@@ -225,8 +225,9 @@ export class EnvironmentEmulator {
         const manifest = {};
         try {
             if (!this.browser) {
-                this.browser = await puppeteer.launch({
+                this.browser = await chromium.launch({
                     headless: true,
+                    executablePath: resolveChromiumExecutablePath(),
                     args: [
                         '--no-sandbox',
                         '--disable-setuid-sandbox',
@@ -238,10 +239,12 @@ export class EnvironmentEmulator {
                         '--disable-gpu',
                     ],
                 });
+                this.context = await this.browser.newContext({
+                    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                });
             }
-            const page = await this.browser.newPage();
-            await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-            await page.evaluateOnNewDocument(() => {
+            const page = await this.context.newPage();
+            await page.addInitScript(() => {
                 Object.defineProperty(navigator, 'webdriver', {
                     get: () => undefined,
                     configurable: true,
@@ -364,7 +367,7 @@ export class EnvironmentEmulator {
                         };
                 window._sdkGlueVersionMap = window._sdkGlueVersionMap || {};
             });
-            await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+            await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
             const allPaths = [
                 ...detected.window,
                 ...detected.document,
@@ -1107,6 +1110,8 @@ Return ONLY the JSON object:`;
     }
     async cleanup() {
         if (this.browser) {
+            await this.context?.close();
+            this.context = undefined;
             await this.browser.close();
             this.browser = undefined;
         }

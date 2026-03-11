@@ -28,7 +28,7 @@ function extractFrontmatterField(frontmatter: string, field: string): string | u
 
 function validateSkillMarkdown(): void {
   const raw = readFile('SKILL.md');
-  const frontmatterMatch = raw.match(/^---\n([\s\S]*?)\n---/);
+  const frontmatterMatch = raw.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   assert(frontmatterMatch, 'SKILL.md must include YAML frontmatter');
 
   const frontmatter = frontmatterMatch![1];

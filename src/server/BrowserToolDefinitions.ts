@@ -806,7 +806,7 @@ get_script_source(scriptId="abc", preview=true)
 
 基于以下项目的最佳实践：
 - undetected-chromedriver
-- puppeteer-extra-plugin-stealth
+- Playwright-backed anti-detection scripts
 - playwright-stealth
 
 建议在 browser_launch 后立即调用此工具`,

@@ -1,6 +1,5 @@
 // @ts-nocheck
 
-import { CodeCollector } from '../../../modules/collector/CodeCollector.js';
 import { DOMInspector } from '../../../modules/collector/DOMInspector.js';
 import { PageController } from '../../../modules/collector/PageController.js';
 import { PlaywrightCompatibilityCollector } from '../../../modules/collector/PlaywrightCompatibilityCollector.js';
@@ -18,7 +17,7 @@ import { ConsoleMonitor } from '../../../modules/monitor/ConsoleMonitor.js';
 import { LLMService } from '../../../services/LLMService.js';
 import { logger } from '../../../utils/logger.js';
 import { ObfuscationAnalysisService } from '../analysis/ObfuscationAnalysisService.js';
-import { PuppeteerEngineAdapter } from '../browser/PuppeteerEngineAdapter.js';
+import { PlaywrightEngineAdapter } from '../browser/PlaywrightEngineAdapter.js';
 import { SessionScriptInventory } from './SessionScriptInventory.js';
 
 let sessionCounter = 0;
@@ -43,18 +42,12 @@ export class SessionLifecycleManager {
   }
 
   resolveEngineChoice(engineType, reason = 'explicit-request') {
-    if (engineType === 'auto') {
-      return {
-        engineType: 'playwright',
-        autoEngine: true,
-        engineSelectionReason: reason === 'explicit-request' ? 'fresh-site-triage' : reason,
-      };
-    }
-
     return {
-      engineType: engineType || this.options.defaultBrowserEngine || 'puppeteer',
-      autoEngine: false,
-      engineSelectionReason: reason,
+      engineType: 'playwright',
+      autoEngine: engineType === 'auto',
+      engineSelectionReason: engineType === 'auto'
+        ? (reason === 'explicit-request' ? 'playwright-default' : reason)
+        : reason,
     };
   }
 
@@ -118,29 +111,19 @@ export class SessionLifecycleManager {
       advancedDeobfuscator,
     });
 
-    const collector = seed.engineType === 'playwright' || seed.engineType === 'puppeteer'
-      ? new PlaywrightCompatibilityCollector({
-          sessionId: seed.sessionId,
-          browserPool: this.browserPool,
-          userAgent: this.options.userAgent,
-          viewport: this.options.viewport,
-        })
-      : new CodeCollector({
-          ...this.config.puppeteer,
-          args: this.options.browserArgs,
-          userAgent: this.options.userAgent,
-          viewport: this.options.viewport,
-        }, {
-          sessionId: seed.sessionId,
-          browserPool: this.browserPool,
-        });
+    const collector = new PlaywrightCompatibilityCollector({
+      sessionId: seed.sessionId,
+      browserPool: this.browserPool,
+      userAgent: this.options.userAgent,
+      viewport: this.options.viewport,
+    });
     const pageController = new PageController(collector);
     const domInspector = new DOMInspector(collector);
     const scriptManager = new ScriptManager(collector);
     const debuggerManager = new DebuggerManager(collector, this.storage, seed.sessionId);
     const runtimeInspector = new RuntimeInspector(collector, debuggerManager);
     const consoleMonitor = new ConsoleMonitor(collector, this.storage, seed.sessionId);
-    const engine = new PuppeteerEngineAdapter(collector, pageController, scriptManager, consoleMonitor);
+    const engine = new PlaywrightEngineAdapter(collector, pageController, scriptManager, consoleMonitor);
     await engine.launch();
     if (seed.snapshot) {
       await engine.restoreSnapshot(seed.snapshot);
@@ -252,11 +235,11 @@ export class SessionLifecycleManager {
 
   async maybeUpgradeSessionEngine(sessionId, capability) {
     const session = this.sessions.get(sessionId);
-    if (!session || session.engineType === 'puppeteer' || session.autoEngine !== true) {
+    if (!session || session.autoEngine !== true) {
       return session;
     }
 
-    return this.recoverSession(sessionId, 'puppeteer', `capability:${capability}`);
+    return this.recoverSession(sessionId, 'playwright', `capability:${capability}`);
   }
 
   listSessions() {

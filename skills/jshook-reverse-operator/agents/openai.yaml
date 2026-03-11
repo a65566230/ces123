@@ -1,0 +1,4 @@
+interface:
+  display_name: "JSHook Reverse Operator"
+  short_description: "Guide Codex through JSHook reverse workflows"
+  default_prompt: "Use $jshook-reverse-operator to run a workflow-first JSHook MCP investigation."

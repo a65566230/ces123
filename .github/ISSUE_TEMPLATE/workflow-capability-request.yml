@@ -1,0 +1,39 @@
+name: Workflow or capability request
+description: Propose a new `flow.*`, `analyze.*`, `debug.*`, or `hook.*` capability.
+title: "[Capability]: "
+labels:
+  - enhancement
+body:
+  - type: dropdown
+    id: layer
+    attributes:
+      label: Target layer
+      options:
+        - flow
+        - analyze
+        - debug
+        - inspect
+        - hook
+        - browser
+        - legacy compatibility
+    validations:
+      required: true
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case
+      description: Describe the investigation or debugging workflow you are trying to complete.
+    validations:
+      required: true
+  - type: textarea
+    id: desired-api
+    attributes:
+      label: Desired tool or workflow
+      description: Share the ideal tool name, inputs, outputs, and any evidence or artifact expectations.
+    validations:
+      required: true
+  - type: textarea
+    id: prior-work
+    attributes:
+      label: Current workaround
+      description: If you currently chain multiple tools manually, describe that sequence here.

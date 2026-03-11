@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: v2 README
+    url: https://github.com/wuji66dde/jshook-reverse-tool#readme
+    about: Start here for MCP installation, environment setup, and the paired skill.

@@ -1,0 +1,55 @@
+name: Bug report
+description: Report a reproducible MCP, workflow, browser, or skill problem.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: dropdown
+    id: install-mode
+    attributes:
+      label: Install mode
+      options:
+        - npm MCP package
+        - source checkout
+        - Codex skill
+        - both MCP and skill
+    validations:
+      required: true
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Browser engine
+      options:
+        - puppeteer
+        - playwright
+        - not applicable
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Reproduction steps
+      description: Include the MCP tool sequence, prompt, or CLI commands that reproduce the issue.
+      placeholder: |
+        1. Start the MCP server
+        2. Call flow.collect-site
+        3. Call analyze.source-map
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Logs, envelopes, or screenshots
+      description: Paste the response envelope, stack trace, or a short redacted log excerpt.

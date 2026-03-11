@@ -1,0 +1,31 @@
+name: Docs or skill request
+description: Ask for better setup docs, tool routing docs, or skill guidance.
+title: "[Docs/Skill]: "
+labels:
+  - documentation
+  - skill
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - MCP installation
+        - environment configuration
+        - workflow documentation
+        - Codex skill guidance
+        - response envelope examples
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is unclear
+      description: Describe the missing or confusing part of the current docs or skill behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: desired
+    attributes:
+      label: What would help
+      description: Mention the example, guide, playbook, or reference page that would unblock you.

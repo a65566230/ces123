@@ -63,33 +63,65 @@ async function buildHookContext(runtime, session, description) {
         indexPolicy: 'deep',
         maxScripts: 40,
     });
+    const diagnostics = [];
     const signatureCandidates = scripts
         .filter((script) => script.source)
-        .map((script) => ({
-        scriptId: script.scriptId,
-        url: script.url,
-        rankedFunctions: runtime.functionRanker.rank(script.source).slice(0, 5),
-        objectPaths: Array.from(String(script.source).matchAll(/window\.([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)/g)).map((match) => `window.${match[1]}.${match[2]}`),
-    }))
-        .filter((candidate) => candidate.rankedFunctions.length > 0 || candidate.objectPaths.length > 0)
+        .map((script) => collectSignatureCandidate(script, ['sign', 'signature', 'token', 'nonce', 'timestamp'], runtime, diagnostics))
+        .filter(Boolean)
         .slice(0, 10);
     return {
         description,
         signatureCandidates,
         siteProfile: session.siteProfile,
+        diagnostics,
     };
 }
 async function hydrateScriptInventory(session, options = {}) {
     const includeSource = options.includeSource === true;
     const indexPolicy = options.indexPolicy || (includeSource ? 'deep' : 'metadata-only');
     const maxScripts = typeof options.maxScripts === 'number' ? options.maxScripts : 250;
-    const scripts = await session.engine.getScripts({
-        includeSource,
-        maxScripts,
-    });
-    session.scriptInventory.recordScripts(scripts, {
-        indexPolicy,
-    });
+    const maxBytes = typeof options.maxBytes === 'number' ? options.maxBytes : 512 * 1024;
+    if (includeSource && session.scriptManager) {
+        const metadataScripts = await session.engine.getScripts({
+            includeSource: false,
+            maxScripts,
+        });
+        session.scriptInventory.recordScripts(metadataScripts, {
+            indexPolicy: 'metadata-only',
+        });
+        const selectedScripts = trimScriptsForSourceLoading(metadataScripts, maxBytes);
+        const loadedScripts = [];
+        for (const script of selectedScripts) {
+            try {
+                const resolved = await session.scriptManager.getScriptSource(script.scriptId, script.url);
+                if (resolved?.source) {
+                    loadedScripts.push({
+                        scriptId: resolved.scriptId,
+                        url: resolved.url,
+                        source: resolved.source,
+                        sourceLength: resolved.sourceLength,
+                    });
+                }
+            }
+            catch (_error) {
+                // Individual large-script failures must not abort the whole search batch.
+            }
+        }
+        if (loadedScripts.length > 0) {
+            session.scriptInventory.recordScripts(loadedScripts, {
+                indexPolicy,
+            });
+        }
+    }
+    else {
+        const scripts = await session.engine.getScripts({
+            includeSource,
+            maxScripts,
+        });
+        session.scriptInventory.recordScripts(scripts, {
+            indexPolicy,
+        });
+    }
     session.siteProfile = session.scriptInventory.getSiteProfile(options.currentUrl);
     return session.scriptInventory.list({
         includeSource,
@@ -113,6 +145,550 @@ function findScriptMetadataMatches(scripts, keyword, maxResults = 20) {
         sourceLoaded: typeof script.source === 'string',
     }));
 }
+function buildProgressiveSourceBatchPlan(maxResults) {
+    const requestedResults = typeof maxResults === 'number' && maxResults > 0 ? maxResults : 20;
+    const firstBatch = Math.min(24, Math.max(12, requestedResults * 2));
+    const plan = [firstBatch, Math.min(48, Math.max(firstBatch * 2, 24)), 80];
+  return plan.filter((size, index) => size > 0 && plan.indexOf(size) === index);
+}
+function trimScriptsForSourceLoading(scripts, maxBytes = 512 * 1024) {
+  let remainingBytes = maxBytes;
+  return scripts.filter((script) => {
+    const sourceLength = typeof script?.sourceLength === 'number' ? script.sourceLength : undefined;
+    if (sourceLength === 0) {
+      return false;
+    }
+    if (sourceLength === undefined) {
+      return true;
+    }
+    if (sourceLength > maxBytes) {
+      return false;
+    }
+    if (remainingBytes - sourceLength < 0) {
+      return false;
+    }
+    remainingBytes -= sourceLength;
+    return true;
+  });
+}
+function buildToolDiagnostic(tool, error, extra = {}) {
+    return {
+        tool,
+        error: error instanceof Error ? error.message : String(error),
+        ...extra,
+    };
+}
+function collectExceptionPauseHints(exceptions, primaryKeyword) {
+    const normalizedKeyword = typeof primaryKeyword === 'string' ? primaryKeyword.trim().toLowerCase() : '';
+    if (!normalizedKeyword || !Array.isArray(exceptions) || exceptions.length === 0) {
+        return [];
+    }
+    return exceptions
+        .filter((item) => String(item?.text || '').toLowerCase().includes(normalizedKeyword))
+        .slice(-3)
+        .map((item) => ({
+        tool: 'breakpoint_set_on_exception',
+        state: 'uncaught',
+        url: item.url,
+        reason: `Pause on uncaught exceptions mentioning "${primaryKeyword}"`,
+        exceptionText: item.text,
+        confidence: 'high',
+        verification: 'observed-exception',
+    }));
+}
+function collectExceptionStackBreakpointHints(exceptions, candidate) {
+    if (!Array.isArray(exceptions) || exceptions.length === 0 || !candidate?.url) {
+        return [];
+    }
+    const hints = [];
+    const seen = new Set();
+    const escapedUrl = String(candidate.url).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const patterns = [
+        new RegExp(`\\(${escapedUrl}:(\\d+):(\\d+)\\)`, 'g'),
+        new RegExp(`${escapedUrl}:(\\d+):(\\d+)`, 'g'),
+    ];
+    for (const exception of exceptions) {
+        const text = String(exception?.text || '');
+        for (const pattern of patterns) {
+            let match;
+            while ((match = pattern.exec(text)) !== null) {
+                const lineNumber = Number(match[1]);
+                const columnNumber = Number(match[2]);
+                if (!Number.isFinite(lineNumber) || !Number.isFinite(columnNumber)) {
+                    continue;
+                }
+                const key = `${lineNumber}:${columnNumber}`;
+                if (seen.has(key)) {
+                    continue;
+                }
+                seen.add(key);
+                hints.push({
+                    tool: 'breakpoint_set',
+                    url: candidate.url,
+                    scriptId: candidate.scriptId,
+                    lineNumber: Math.max(0, lineNumber - 1),
+                    displayLineNumber: lineNumber,
+                    columnNumber: Math.max(0, columnNumber - 1),
+                    reason: 'Pause near an exception stack frame already observed on this page',
+                    confidence: 'high',
+                    verification: 'observed-exception-stack',
+                });
+                if (hints.length >= 3) {
+                    return hints;
+                }
+            }
+        }
+    }
+    return hints;
+}
+function buildExceptionDerivedCandidates(exceptions, primaryKeyword) {
+    const normalizedKeyword = typeof primaryKeyword === 'string' ? primaryKeyword.trim().toLowerCase() : '';
+    if (!normalizedKeyword || !Array.isArray(exceptions) || exceptions.length === 0) {
+        return [];
+    }
+    const candidates = [];
+    const seen = new Set();
+    const stackFrameRegex = /(https?:\/\/[^\s)]+):(\d+):(\d+)/g;
+    for (const exception of exceptions) {
+        const text = String(exception?.text || '');
+        if (!text.toLowerCase().includes(normalizedKeyword)) {
+            continue;
+        }
+        let match;
+        while ((match = stackFrameRegex.exec(text)) !== null) {
+            const url = match[1];
+            const lineNumber = Number(match[2]);
+            const columnNumber = Number(match[3]);
+            if (!url || !Number.isFinite(lineNumber) || !Number.isFinite(columnNumber)) {
+                continue;
+            }
+            const key = `${url}:${lineNumber}:${columnNumber}`;
+            if (seen.has(key)) {
+                continue;
+            }
+            seen.add(key);
+            candidates.push({
+                scriptId: undefined,
+                url,
+                matches: [primaryKeyword],
+                rankedFunctions: [],
+                objectPaths: [],
+                keywordHits: [],
+                requestPatternHits: [{
+                        scriptId: undefined,
+                        url,
+                        line: lineNumber,
+                        column: Math.max(0, columnNumber - 1),
+                        matchText: primaryKeyword,
+                        context: text.slice(0, 2000),
+                    }],
+                score: 200,
+                derivedFrom: 'exception-stack',
+            });
+            if (candidates.length >= 5) {
+                return candidates;
+            }
+        }
+    }
+    return candidates;
+}
+function buildPausedStateDerivedCandidates(pausedState, primaryKeyword) {
+    const description = String(pausedState?.data?.description || '');
+    if (!description) {
+        return [];
+    }
+    return buildExceptionDerivedCandidates([{
+            text: description,
+            url: pausedState?.callFrames?.[0]?.url,
+        }], primaryKeyword);
+}
+function buildPausedStateExceptionRecords(pausedState) {
+    const description = String(pausedState?.data?.description || '');
+    if (!description) {
+        return [];
+    }
+    return [{
+            text: description,
+            url: pausedState?.callFrames?.[0]?.url,
+        }];
+}
+function isExceptionPauseReason(reason) {
+    const normalizedReason = String(reason || '').trim().toLowerCase();
+    return normalizedReason === 'exception' || normalizedReason === 'promiserejection';
+}
+function collectObservedPausedLocationHints(session, candidate, primaryKeyword) {
+    const pausedState = session?.debuggerManager?.getPausedState?.();
+    const topFrame = pausedState?.callFrames?.[0];
+    if (!topFrame?.location || !candidate) {
+        return [];
+    }
+    if (isExceptionPauseReason(pausedState?.reason)) {
+        return [];
+    }
+    const normalizedPrimaryKeyword = typeof primaryKeyword === 'string' ? primaryKeyword.trim().toLowerCase() : '';
+    const hasDirectPrimaryHit = normalizedPrimaryKeyword
+        && (((candidate.matches || []).some((item) => String(item).toLowerCase() === normalizedPrimaryKeyword))
+            || ((candidate.keywordHits || []).some((hit) => hit.keyword === normalizedPrimaryKeyword))
+            || ((candidate.requestPatternHits || []).length > 0));
+    if (!hasDirectPrimaryHit) {
+        return [];
+    }
+    const sameScriptId = typeof candidate.scriptId === 'string' && topFrame.location.scriptId === candidate.scriptId;
+    const sameUrl = typeof candidate.url === 'string' && typeof topFrame.url === 'string' && topFrame.url === candidate.url;
+    if (!sameScriptId && !sameUrl) {
+        return [];
+    }
+    return [{
+            tool: 'breakpoint_set',
+            url: candidate.url,
+            scriptId: candidate.scriptId,
+            lineNumber: topFrame.location.lineNumber,
+            displayLineNumber: (topFrame.location.lineNumber || 0) + 1,
+            columnNumber: topFrame.location.columnNumber,
+            reason: 'Pause again at the observed debugger stop location',
+            confidence: 'high',
+            verification: 'observed-paused-location',
+        }];
+}
+function collectObservedExceptionTopFrameHints(session, candidate) {
+    const pausedState = session?.debuggerManager?.getPausedState?.();
+    const topFrame = pausedState?.callFrames?.[0];
+    const description = String(pausedState?.data?.description || '');
+    if (!topFrame?.location || !candidate?.url || !description.includes(candidate.url)) {
+        return [];
+    }
+    if (isExceptionPauseReason(pausedState?.reason)) {
+        return [];
+    }
+    return [{
+            tool: 'breakpoint_set',
+            url: candidate.url,
+            scriptId: candidate.scriptId,
+            lineNumber: topFrame.location.lineNumber,
+            displayLineNumber: (topFrame.location.lineNumber || 0) + 1,
+            columnNumber: topFrame.location.columnNumber,
+            reason: 'Pause again at the top frame from an observed exception pause',
+            confidence: 'high',
+            verification: 'observed-exception-top-frame',
+        }];
+}
+async function runWorkerScriptSearch(runtime, scriptsForWorker, args, extra = {}) {
+    const workerResult = await runtime.workerService.runSearchTask({
+        keyword: String(args.keyword || ''),
+        searchMode: args.searchMode || 'indexed',
+        maxResults: typeof args.maxResults === 'number' ? args.maxResults : 100,
+        maxBytes: typeof args.maxBytes === 'number' ? args.maxBytes : 24 * 1024,
+        scripts: scriptsForWorker.map((item) => ({
+            scriptId: item.scriptId,
+            url: item.url,
+            source: item.source,
+        })),
+    });
+    return {
+        ...workerResult,
+        ...extra,
+    };
+}
+async function progressivelySearchScriptSources(runtime, session, args) {
+    const batchPlan = buildProgressiveSourceBatchPlan(args.maxResults);
+    let lastResult = {
+        keyword: String(args.keyword || ''),
+        searchMode: args.searchMode || 'indexed',
+        totalMatches: 0,
+        truncated: false,
+        executionMode: 'worker',
+        matches: [],
+        loadStrategy: 'progressive-source-batches',
+        sourceBatches: batchPlan,
+        loadedScripts: 0,
+    };
+    for (const batchSize of batchPlan) {
+        await hydrateScriptInventory(session, {
+            includeSource: true,
+            indexPolicy: args.indexPolicy || 'deep',
+            maxScripts: batchSize,
+            maxBytes: typeof args.maxBytes === 'number' ? args.maxBytes : 512 * 1024,
+        });
+        const scriptsForWorker = trimScriptsForSourceLoading(session.scriptInventory.list({
+            includeSource: true,
+            maxScripts: batchSize,
+        }).filter((item) => typeof item.source === 'string'), typeof args.maxBytes === 'number' ? args.maxBytes : 512 * 1024);
+        if (scriptsForWorker.length === 0) {
+            continue;
+        }
+        const workerResult = await runWorkerScriptSearch(runtime, scriptsForWorker, args, {
+            loadStrategy: 'progressive-source-batches',
+            sourceBatches: batchPlan,
+            loadedScripts: scriptsForWorker.length,
+        });
+        lastResult = workerResult;
+        if ((workerResult.matches || []).length > 0) {
+            return workerResult;
+        }
+    }
+    return lastResult;
+}
+function collectKeywordLineHits(source, keywords, maxHits = 3) {
+    const normalizedKeywords = (keywords || [])
+        .filter((keyword) => typeof keyword === 'string' && keyword.trim().length > 0)
+        .map((keyword) => keyword.trim().toLowerCase());
+    if (normalizedKeywords.length === 0 || typeof source !== 'string' || source.length === 0) {
+        return [];
+    }
+    const hits = [];
+    const lines = source.split(/\r?\n/);
+    for (const keyword of normalizedKeywords) {
+        for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+            if (!lines[lineIndex].toLowerCase().includes(keyword)) {
+                continue;
+            }
+            hits.push({
+                keyword,
+                lineNumber: lineIndex,
+                displayLineNumber: lineIndex + 1,
+            });
+            break;
+        }
+        if (hits.length >= maxHits) {
+            return hits;
+        }
+    }
+    return hits;
+}
+function hasRequestHint(value) {
+    const text = String(value || '').trim();
+    return text.length > 0;
+}
+function buildCandidateDebugPlan(candidate, requestPattern, exceptionHints = [], observedPausedLocationHints = [], exceptionStackBreakpointHints = [], observedExceptionTopFrameHints = []) {
+    const plans = [];
+    const seen = new Set();
+    const normalizedPrimaryKeyword = typeof requestPattern === 'string' ? requestPattern.trim().toLowerCase() : '';
+    const hasExactPrimaryEvidence = Boolean(normalizedPrimaryKeyword)
+        && ((candidate.requestPatternHits || []).length > 0
+            || (candidate.keywordHits || []).some((hit) => hit.keyword === normalizedPrimaryKeyword)
+            || (candidate.matches || []).some((item) => String(item).toLowerCase() === normalizedPrimaryKeyword)
+            || observedPausedLocationHints.length > 0
+            || observedExceptionTopFrameHints.length > 0
+            || exceptionStackBreakpointHints.length > 0);
+    const pushPlan = (plan) => {
+        if (!plan || typeof plan !== 'object') {
+            return;
+        }
+        const key = JSON.stringify([
+            plan.tool,
+            plan.url,
+            plan.scriptId,
+            plan.lineNumber,
+            plan.expression,
+            plan.urlPattern,
+        ]);
+        if (seen.has(key)) {
+            return;
+        }
+        seen.add(key);
+        plans.push(plan);
+    };
+    for (const hint of observedPausedLocationHints) {
+        pushPlan(hint);
+        if (plans.length >= 2) {
+            break;
+        }
+    }
+    for (const hint of observedExceptionTopFrameHints) {
+        pushPlan(hint);
+        if (plans.length >= 2) {
+            break;
+        }
+    }
+    for (const hint of exceptionStackBreakpointHints) {
+        pushPlan(hint);
+        if (plans.length >= 3) {
+            break;
+        }
+    }
+    for (const hint of exceptionHints) {
+        pushPlan(hint);
+        if (plans.length >= 3) {
+            break;
+        }
+    }
+    for (const hit of candidate.requestPatternHits || []) {
+        if (!candidate.url) {
+            continue;
+        }
+        pushPlan({
+            tool: 'breakpoint_set',
+            url: candidate.url,
+            scriptId: candidate.scriptId,
+            lineNumber: Math.max(0, Number(hit.line || 1) - 1),
+            displayLineNumber: Number(hit.line || 1),
+            columnNumber: typeof hit.column === 'number' ? hit.column : undefined,
+            keyword: hit.matchText || requestPattern,
+            reason: `Pause near exact request-pattern hit "${hit.matchText || requestPattern}"`,
+            confidence: 'medium',
+            verification: 'static-source-hit',
+        });
+        if (plans.length >= 3) {
+            break;
+        }
+    }
+    for (const hit of candidate.keywordHits || []) {
+        if (!candidate.url) {
+            continue;
+        }
+        if (hasExactPrimaryEvidence && normalizedPrimaryKeyword && hit.keyword !== normalizedPrimaryKeyword) {
+            continue;
+        }
+        pushPlan({
+            tool: 'breakpoint_set',
+            url: candidate.url,
+            scriptId: candidate.scriptId,
+            lineNumber: hit.lineNumber,
+            displayLineNumber: hit.displayLineNumber,
+            keyword: hit.keyword,
+            reason: `Pause near keyword "${hit.keyword}"`,
+            confidence: 'medium',
+            verification: 'static-keyword-hit',
+        });
+        if (plans.length >= 5) {
+            break;
+        }
+    }
+    for (const rankedFunction of candidate.rankedFunctions || []) {
+        if (!candidate.url || typeof rankedFunction?.line !== 'number' || rankedFunction.line <= 0) {
+            continue;
+        }
+        pushPlan({
+            tool: 'breakpoint_set',
+            url: candidate.url,
+            scriptId: candidate.scriptId,
+            lineNumber: Math.max(0, rankedFunction.line - 1),
+            displayLineNumber: rankedFunction.line,
+            functionName: rankedFunction.name,
+            reason: `Pause in likely hot function ${rankedFunction.name}`,
+            confidence: 'low',
+            verification: 'heuristic-function-rank',
+        });
+        if (plans.length >= 5) {
+            break;
+        }
+    }
+    for (const objectPath of candidate.objectPaths || []) {
+        pushPlan({
+            tool: 'watch_add',
+            expression: objectPath,
+            reason: `Watch runtime value for ${objectPath}`,
+            confidence: 'low',
+            verification: 'static-object-path',
+        });
+        if (plans.length >= 6) {
+            break;
+        }
+    }
+    if (hasRequestHint(requestPattern)) {
+        pushPlan({
+            tool: 'xhr_breakpoint_set',
+            urlPattern: String(requestPattern),
+            reason: `Pause on XHR/fetch URLs matching "${requestPattern}"`,
+            confidence: 'low',
+            verification: 'pattern-derived',
+        });
+    }
+    return plans;
+}
+function scoreSignatureCandidate(candidate, primaryKeyword) {
+    const normalizedPrimary = typeof primaryKeyword === 'string' ? primaryKeyword.trim().toLowerCase() : '';
+    let score = 0;
+    if (normalizedPrimary) {
+        if ((candidate.matches || []).some((item) => String(item).toLowerCase() === normalizedPrimary)) {
+            score += 100;
+        }
+        score += (candidate.keywordHits || []).filter((hit) => hit.keyword === normalizedPrimary).length * 40;
+        if (String(candidate.url || '').toLowerCase().includes(normalizedPrimary)) {
+            score += 20;
+        }
+    }
+    score += (candidate.keywordHits || []).length * 12;
+    score += (candidate.rankedFunctions || []).length * 4;
+    score += Math.min((candidate.objectPaths || []).length, 5);
+    return score;
+}
+function buildReportDebugPlan(fingerprints) {
+    const plans = [];
+    const seen = new Set();
+    for (const fingerprint of fingerprints || []) {
+        if (!fingerprint?.url) {
+            continue;
+        }
+        for (const rankedFunction of fingerprint.rankedFunctions || []) {
+            if (typeof rankedFunction?.line !== 'number' || rankedFunction.line <= 0) {
+                continue;
+            }
+            const key = `${fingerprint.url}:${rankedFunction.line}:${rankedFunction.name}`;
+            if (seen.has(key)) {
+                continue;
+            }
+            seen.add(key);
+            plans.push({
+                tool: 'breakpoint_set',
+                url: fingerprint.url,
+                scriptId: fingerprint.scriptId,
+                lineNumber: Math.max(0, rankedFunction.line - 1),
+                displayLineNumber: rankedFunction.line,
+                functionName: rankedFunction.name,
+                reason: `Pause in ranked function ${rankedFunction.name}`,
+            });
+            break;
+        }
+        if (plans.length >= 5) {
+            break;
+        }
+    }
+    return {
+        lineNumberBase: 'zero-based',
+        plans,
+        nextStep: plans.length > 0
+            ? 'Use flow.find-signature-path for target-specific breakpoint_set/watch_add/xhr_breakpoint_set suggestions.'
+            : 'Use flow.find-signature-path to build target-specific breakpoint suggestions.',
+    };
+}
+function collectSignatureCandidate(script, keywords, runtime, diagnostics) {
+    const matches = keywords.filter((keyword) => script.source.toLowerCase().includes(keyword.toLowerCase()));
+    let rankedFunctions = [];
+    let objectPaths = [];
+    try {
+        rankedFunctions = runtime.functionRanker.rank(script.source).slice(0, 5);
+    }
+    catch (error) {
+        diagnostics.push(buildToolDiagnostic('flow.find-signature-path', error, {
+            scriptId: script.scriptId,
+            url: script.url,
+            stage: 'rank-functions',
+        }));
+    }
+    try {
+        objectPaths = Array.from(String(script.source).matchAll(/window\.([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)/g)).map((match) => `window.${match[1]}.${match[2]}`);
+    }
+    catch (error) {
+        diagnostics.push(buildToolDiagnostic('flow.find-signature-path', error, {
+            scriptId: script.scriptId,
+            url: script.url,
+            stage: 'object-path-scan',
+        }));
+    }
+    if (matches.length === 0 && rankedFunctions.length === 0 && objectPaths.length === 0) {
+        return null;
+    }
+    return {
+        scriptId: script.scriptId,
+        url: script.url,
+        matches,
+        rankedFunctions,
+        objectPaths,
+        keywordHits: collectKeywordLineHits(script.source, matches, 3),
+        requestPatternHits: Array.isArray(script.requestPatternHits) ? script.requestPatternHits : [],
+    };
+}
 async function resolveReportFingerprintCandidates(session, runtime) {
     const manifestScripts = await hydrateScriptInventory(session, {
         includeSource: false,
@@ -124,6 +700,7 @@ async function resolveReportFingerprintCandidates(session, runtime) {
         .sort((left, right) => (left.sourceLength || 0) - (right.sourceLength || 0))
         .slice(0, 4);
     const resolved = [];
+    const diagnostics = [];
     for (const candidate of candidates) {
         try {
             const sourcePayload = await resolveScriptSource(session, {
@@ -139,10 +716,17 @@ async function resolveReportFingerprintCandidates(session, runtime) {
                 });
             }
         }
-        catch (_error) {
+        catch (error) {
+            diagnostics.push(buildToolDiagnostic('flow.reverse-report', error, {
+                scriptId: candidate.scriptId,
+                url: candidate.url,
+            }));
         }
     }
-    return resolved;
+    return {
+        fingerprints: resolved,
+        diagnostics,
+    };
 }
 async function resolveScriptSource(session, args) {
     if (typeof args.code === 'string') {
@@ -619,32 +1203,13 @@ const blueprints = [
                                     totalMatches: stored.total,
                                     truncated: false,
                                     executionMode: 'worker',
+                                    loadStrategy: 'storage-index',
                                     matches: paged.items,
                                     page: paged.page,
                                 };
                             }
                             else {
-                                const sourceSearchLimit = Math.min(80, Math.max(typeof args.maxResults === 'number' ? args.maxResults * 8 : 80, 20));
-                                await hydrateScriptInventory(session, {
-                                    includeSource: true,
-                                    indexPolicy: args.indexPolicy || 'deep',
-                                    maxScripts: sourceSearchLimit,
-                                });
-                                const scriptsForWorker = session.scriptInventory.list({
-                                    includeSource: true,
-                                    maxScripts: sourceSearchLimit,
-                                }).filter((item) => typeof item.source === 'string');
-                                const workerResult = await runtime.workerService.runSearchTask({
-                                    keyword: String(args.keyword || ''),
-                                    searchMode: args.searchMode || 'indexed',
-                                    maxResults: typeof args.maxResults === 'number' ? args.maxResults : 100,
-                                    maxBytes: typeof args.maxBytes === 'number' ? args.maxBytes : 24 * 1024,
-                                    scripts: scriptsForWorker.map((item) => ({
-                                        scriptId: item.scriptId,
-                                        url: item.url,
-                                        source: item.source,
-                                    })),
-                                });
+                                const workerResult = await progressivelySearchScriptSources(runtime, session, args);
                                 const paged = paginateItems(workerResult.matches || [], {
                                     page: typeof args.page === 'number' ? args.page : undefined,
                                     pageSize: typeof args.pageSize === 'number' ? args.pageSize : undefined,
@@ -659,27 +1224,7 @@ const blueprints = [
                         }
                         else {
                             enforceRateLimit(runtime, session.sessionId, 'inspect.scripts.search');
-                            const sourceSearchLimit = Math.min(80, Math.max(typeof args.maxResults === 'number' ? args.maxResults * 8 : 80, 20));
-                            await hydrateScriptInventory(session, {
-                                includeSource: true,
-                                indexPolicy: args.indexPolicy || 'deep',
-                                maxScripts: sourceSearchLimit,
-                            });
-                            const scriptsForWorker = session.scriptInventory.list({
-                                includeSource: true,
-                                maxScripts: sourceSearchLimit,
-                            }).filter((item) => typeof item.source === 'string');
-                            const workerResult = await runtime.workerService.runSearchTask({
-                                keyword: String(args.keyword || ''),
-                                searchMode: args.searchMode || 'indexed',
-                                maxResults: typeof args.maxResults === 'number' ? args.maxResults : 100,
-                                maxBytes: typeof args.maxBytes === 'number' ? args.maxBytes : 24 * 1024,
-                                scripts: scriptsForWorker.map((item) => ({
-                                    scriptId: item.scriptId,
-                                    url: item.url,
-                                    source: item.source,
-                                })),
-                            });
+                            const workerResult = await progressivelySearchScriptSources(runtime, session, args);
                             const paged = paginateItems(workerResult.matches || [], {
                                 page: typeof args.page === 'number' ? args.page : undefined,
                                 pageSize: typeof args.pageSize === 'number' ? args.pageSize : undefined,
@@ -1593,34 +2138,99 @@ const blueprints = [
                 }
                 const keywords = [args.requestPattern, 'sign', 'signature', 'token', 'nonce', 'timestamp']
                     .filter((value) => typeof value === 'string' && value.length > 0);
-                const scripts = await session.engine.getScripts({
-                    includeSource: true,
-                    maxScripts: 40,
-                });
-                const candidates = scripts
+                const normalizedPrimaryKeyword = typeof args.requestPattern === 'string'
+                    ? args.requestPattern.trim().toLowerCase()
+                    : '';
+                const exceptionRecords = [
+                    ...(session.consoleMonitor?.getExceptions?.({ limit: 50 }) || []),
+                    ...buildPausedStateExceptionRecords(session.debuggerManager?.getPausedState?.()),
+                ];
+                const exceptionHints = collectExceptionPauseHints(exceptionRecords, args.requestPattern);
+                const diagnostics = [];
+                let scripts = [];
+                if (normalizedPrimaryKeyword) {
+                    const targetedSearch = await progressivelySearchScriptSources(runtime, session, {
+                        keyword: args.requestPattern,
+                        searchMode: 'substring',
+                        maxResults: 10,
+                        maxBytes: 20 * 1024 * 1024,
+                        indexPolicy: 'deep',
+                    });
+                    const hitsByScriptId = new Map();
+                    for (const match of targetedSearch.matches || []) {
+                        if (!match?.scriptId) {
+                            continue;
+                        }
+                        if (!hitsByScriptId.has(match.scriptId)) {
+                            hitsByScriptId.set(match.scriptId, []);
+                        }
+                        hitsByScriptId.get(match.scriptId).push(match);
+                    }
+                    const matchedScriptIds = Array.from(new Set((targetedSearch.matches || [])
+                        .map((match) => match?.scriptId)
+                        .filter((scriptId) => typeof scriptId === 'string'))).slice(0, 6);
+                    for (const scriptId of matchedScriptIds) {
+                        try {
+                            const sourcePayload = await resolveScriptSource(session, { scriptId });
+                            if (sourcePayload?.source) {
+                                scripts.push({
+                                    scriptId: sourcePayload.scriptId,
+                                    url: sourcePayload.scriptUrl,
+                                    source: sourcePayload.source,
+                                    sourceLength: sourcePayload.source.length,
+                                    requestPatternHits: hitsByScriptId.get(scriptId) || [],
+                                });
+                            }
+                        }
+                        catch (error) {
+                            diagnostics.push(buildToolDiagnostic('flow.find-signature-path', error, { scriptId }));
+                        }
+                    }
+                }
+                if (scripts.length === 0) {
+                    scripts = await session.engine.getScripts({
+                        includeSource: true,
+                        maxScripts: 40,
+                    });
+                }
+                const rawCandidates = scripts
                     .filter((script) => script.source)
-                    .map((script) => ({
-                    scriptId: script.scriptId,
-                    url: script.url,
-                    matches: keywords.filter((keyword) => script.source.toLowerCase().includes(keyword.toLowerCase())),
-                    rankedFunctions: runtime.functionRanker.rank(script.source).slice(0, 5),
-                    objectPaths: Array.from(String(script.source).matchAll(/window\.([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)/g)).map((match) => `window.${match[1]}.${match[2]}`),
-                }))
-                    .filter((candidate) => candidate.matches.length > 0 || candidate.rankedFunctions.length > 0)
-                    .sort((left, right) => (right.matches.length + right.rankedFunctions.length) - (left.matches.length + left.rankedFunctions.length))
+                    .map((script) => collectSignatureCandidate(script, keywords, runtime, diagnostics))
+                    .filter(Boolean);
+                const exceptionDerivedCandidates = [
+                    ...buildExceptionDerivedCandidates(exceptionRecords, args.requestPattern),
+                    ...buildPausedStateDerivedCandidates(session.debuggerManager?.getPausedState?.(), args.requestPattern),
+                ];
+                const exactCandidates = normalizedPrimaryKeyword
+                    ? [...rawCandidates, ...exceptionDerivedCandidates].filter((candidate) => (candidate.matches || []).some((item) => String(item).toLowerCase() === normalizedPrimaryKeyword)
+                        || (candidate.keywordHits || []).some((hit) => hit.keyword === normalizedPrimaryKeyword))
+                    : [];
+                const candidates = (exactCandidates.length > 0 ? exactCandidates : [...rawCandidates, ...exceptionDerivedCandidates])
+                    .sort((left, right) => scoreSignatureCandidate(right, args.requestPattern) - scoreSignatureCandidate(left, args.requestPattern))
                     .slice(0, 10)
-                    .map((candidate) => ({
-                    ...candidate,
-                    recommendedHookDescription: candidate.objectPaths?.[0]
-                        ? `自动破解 ${candidate.objectPaths[0]} 加密并捕获返回值`
-                        : candidate.rankedFunctions?.[0]?.name
-                            ? `自动破解 ${candidate.rankedFunctions[0].name} 签名并捕获返回值`
-                            : '自动破解签名加密并捕获返回值',
-                }));
+                    .map((candidate) => {
+                    const observedPausedLocationHints = collectObservedPausedLocationHints(session, candidate, args.requestPattern);
+                    const observedExceptionTopFrameHints = collectObservedExceptionTopFrameHints(session, candidate);
+                    const exceptionStackBreakpointHints = collectExceptionStackBreakpointHints(exceptionRecords, candidate);
+                    const recommendedBreakpoints = buildCandidateDebugPlan(candidate, args.requestPattern, exceptionHints, observedPausedLocationHints, exceptionStackBreakpointHints, observedExceptionTopFrameHints);
+                    return {
+                        ...candidate,
+                        score: scoreSignatureCandidate(candidate, args.requestPattern),
+                        recommendedBreakpoints,
+                        preferredDebugStrategy: recommendedBreakpoints[0] || null,
+                        lineNumberBase: 'zero-based',
+                        recommendedHookDescription: candidate.objectPaths?.[0]
+                            ? `自动破解 ${candidate.objectPaths[0]} 加密并捕获返回值`
+                            : candidate.rankedFunctions?.[0]?.name
+                                ? `自动破解 ${candidate.rankedFunctions[0].name} 签名并捕获返回值`
+                                : '自动破解签名加密并捕获返回值',
+                    };
+                });
                 const evidence = runtime.evidence.create('signature-path', 'Potential signature path candidates identified', candidates, session.sessionId);
                 return successResponse('Potential signature path candidates identified', candidates, {
                     sessionId: session.sessionId,
                     evidenceIds: [evidence.id],
+                    diagnostics,
                     nextActions: ['Inspect the top candidate scripts or run flow.generate-hook against the target API primitive.'],
                 });
             };
@@ -1748,7 +2358,7 @@ const blueprints = [
                     return errorResponse('Session not found', new Error('Unknown sessionId'));
                 }
                 const status = buildStatusPayload(session, await session.engine.getStatus());
-                const fingerprints = await resolveReportFingerprintCandidates(session, runtime);
+                const fingerprintSummary = await resolveReportFingerprintCandidates(session, runtime);
                 const report = {
                     session: {
                         sessionId: session.sessionId,
@@ -1775,13 +2385,15 @@ const blueprints = [
                         summary: item.summary,
                         createdAt: item.createdAt,
                     })),
-                    fingerprints,
+                    fingerprints: fingerprintSummary.fingerprints,
+                    debugPlan: buildReportDebugPlan(fingerprintSummary.fingerprints),
                 };
                 const artifact = runtime.artifacts.create('reverse-report', 'Structured reverse report', report, session.sessionId);
                 return successResponse('Structured reverse report generated', report, {
                     sessionId: session.sessionId,
                     artifactId: artifact.id,
                     detailId: artifact.id,
+                    diagnostics: fingerprintSummary.diagnostics,
                 });
             };
         },

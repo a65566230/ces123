@@ -5,11 +5,13 @@ export class SmartCodeCollector {
     DEFAULT_MAX_TOTAL_SIZE = 512 * 1024;
     DEFAULT_MAX_FILE_SIZE = 100 * 1024;
     PREVIEW_LINES = 50;
+    SUMMARY_PREVIEW_LINES = 8;
+    SUMMARY_PREVIEW_CHARS = 600;
     async smartCollect(_page, files, options) {
         logger.info(`Smart code collection mode: ${options.mode}`);
         switch (options.mode) {
             case 'summary':
-                return this.collectSummaries(files);
+                return this.collectSummaries(files, options);
             case 'priority':
                 return this.collectByPriority(files, options);
             case 'incremental':
@@ -19,11 +21,11 @@ export class SmartCodeCollector {
                 return this.collectWithLimit(files, options);
         }
     }
-    async collectSummaries(files) {
+    async collectSummaries(files, options = {}) {
         logger.info('Generating code summaries...');
-        return files.map(file => {
+        const summaries = files.map(file => {
             const lines = file.content.split('\n');
-            const preview = lines.slice(0, this.PREVIEW_LINES).join('\n');
+            const preview = lines.slice(0, this.SUMMARY_PREVIEW_LINES).join('\n').slice(0, this.SUMMARY_PREVIEW_CHARS);
             return {
                 url: file.url,
                 size: file.size,
@@ -36,6 +38,18 @@ export class SmartCodeCollector {
                 preview,
             };
         });
+        const maxTotalSize = options.maxTotalSize || this.DEFAULT_MAX_TOTAL_SIZE;
+        const result = [];
+        let currentSize = 0;
+        for (const summary of summaries) {
+            const serializedSize = JSON.stringify(summary).length;
+            if (currentSize + serializedSize > maxTotalSize) {
+                break;
+            }
+            result.push(summary);
+            currentSize += serializedSize;
+        }
+        return result;
     }
     collectByPriority(files, options) {
         const maxTotalSize = options.maxTotalSize || this.DEFAULT_MAX_TOTAL_SIZE;

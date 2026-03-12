@@ -7,9 +7,14 @@ export class SessionScriptInventory {
   storage;
   entries = new Map();
   urlToScriptId = new Map();
+  scriptIdAliases = new Map();
   keywordIndex = new Map();
   chunks = new Map();
   CHUNK_SIZE = 100 * 1024;
+  MAX_INDEXABLE_SOURCE_BYTES = 2 * 1024 * 1024;
+  MAX_INDEXABLE_LINE_LENGTH = 4 * 1024;
+  MAX_CONTEXT_CHARS = 240;
+  MAX_TERMS_PER_SCRIPT = 10_000;
 
   constructor(sessionId, storage) {
     this.sessionId = sessionId;
@@ -23,10 +28,12 @@ export class SessionScriptInventory {
       const normalizedUrl = typeof script.url === 'string' && script.url.length > 0
         ? script.url
         : `inline:${script.scriptId}`;
-      const existing = this.entries.get(script.scriptId) || {
-        scriptId: script.scriptId,
+      const canonicalScriptId = this.resolveCanonicalScriptId(script.scriptId, normalizedUrl);
+      const existing = this.entries.get(canonicalScriptId) || {
+        scriptId: canonicalScriptId,
         url: normalizedUrl,
       };
+      const previousSource = existing.source;
 
       existing.url = normalizedUrl;
       existing.sourceLength = script.sourceLength ?? script.source?.length ?? existing.sourceLength;
@@ -36,11 +43,15 @@ export class SessionScriptInventory {
         existing.sourceLoadedAt = new Date().toISOString();
       }
 
-      this.entries.set(script.scriptId, existing);
-      this.urlToScriptId.set(normalizedUrl, script.scriptId);
+      this.entries.set(canonicalScriptId, existing);
+      this.scriptIdAliases.set(script.scriptId, canonicalScriptId);
+      if (this.shouldDedupeByUrl(normalizedUrl)) {
+        this.urlToScriptId.set(normalizedUrl, canonicalScriptId);
+      }
 
-      if (typeof existing.source === 'string' && indexPolicy !== 'metadata-only') {
-        this.indexScript(existing);
+      const sourceChanged = typeof script.source === 'string' && script.source !== previousSource;
+      if (typeof existing.source === 'string' && indexPolicy !== 'metadata-only' && sourceChanged) {
+        this.indexScript(existing, { indexPolicy });
         if (this.storage) {
           void this.storage.storeScriptChunkBatch(this.sessionId, this.chunks.get(existing.scriptId) || []);
         }
@@ -65,8 +76,11 @@ export class SessionScriptInventory {
   }
 
   getScript(options = {}) {
-    if (typeof options.scriptId === 'string' && this.entries.has(options.scriptId)) {
-      return this.entries.get(options.scriptId);
+    if (typeof options.scriptId === 'string') {
+      const canonicalScriptId = this.scriptIdAliases.get(options.scriptId) || options.scriptId;
+      if (this.entries.has(canonicalScriptId)) {
+        return this.entries.get(canonicalScriptId);
+      }
     }
 
     if (typeof options.url === 'string') {
@@ -207,13 +221,26 @@ export class SessionScriptInventory {
     };
   }
 
-  indexScript(entry) {
+  indexScript(entry, options = {}) {
     this.chunkScript(entry.scriptId, entry.url, entry.source);
+    if (!this.shouldBuildKeywordIndex(entry, options.indexPolicy)) {
+      return;
+    }
+
     const lines = entry.source.split('\n');
+    let indexedTerms = 0;
+    let runningOffset = 0;
 
     for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
       const line = lines[lineIndex];
+      const chunkRef = `${entry.scriptId}:${Math.floor(runningOffset / this.CHUNK_SIZE)}`;
       if (!line) {
+        runningOffset += 1;
+        continue;
+      }
+
+      if (line.length > this.MAX_INDEXABLE_LINE_LENGTH) {
+        runningOffset += line.length + 1;
         continue;
       }
 
@@ -229,15 +256,25 @@ export class SessionScriptInventory {
           this.keywordIndex.set(term, []);
         }
 
+        const column = line.toLowerCase().indexOf(term);
         this.keywordIndex.get(term).push({
           scriptId: entry.scriptId,
           url: entry.url,
           line: lineIndex + 1,
-          column: line.toLowerCase().indexOf(term),
+          column,
           matchText: term,
-          context: line,
-          chunkRef: `${entry.scriptId}:${this.resolveChunkIndex(entry.source, lineIndex)}`,
+          context: this.buildContextSnippet(line, column),
+          chunkRef,
         });
+        indexedTerms += 1;
+        if (indexedTerms >= this.MAX_TERMS_PER_SCRIPT) {
+          break;
+        }
+      }
+
+      runningOffset += line.length + 1;
+      if (indexedTerms >= this.MAX_TERMS_PER_SCRIPT) {
+        break;
       }
     }
   }
@@ -303,9 +340,12 @@ export class SessionScriptInventory {
       }
 
       const lines = entry.source.split('\n');
+      let runningOffset = 0;
       for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
         const line = lines[lineIndex];
+        const chunkRef = `${entry.scriptId}:${Math.floor(runningOffset / this.CHUNK_SIZE)}`;
         if (!line) {
+          runningOffset += 1;
           continue;
         }
 
@@ -317,17 +357,52 @@ export class SessionScriptInventory {
             line: lineIndex + 1,
             column: match.index || 0,
             matchText: match[0],
-            context: line,
-            chunkRef: `${entry.scriptId}:${Math.floor(entry.source.indexOf(line) / this.CHUNK_SIZE)}`,
+            context: this.buildContextSnippet(line, match.index || 0),
+            chunkRef,
           });
 
           if (matches.length >= maxResults) {
             return matches;
           }
         }
+
+        runningOffset += line.length + 1;
       }
     }
 
     return matches;
+  }
+
+  shouldBuildKeywordIndex(entry, indexPolicy) {
+    if (indexPolicy === 'metadata-only') {
+      return false;
+    }
+
+    return (entry?.source?.length || 0) <= this.MAX_INDEXABLE_SOURCE_BYTES;
+  }
+
+  buildContextSnippet(line, column = 0) {
+    if (line.length <= this.MAX_CONTEXT_CHARS) {
+      return line;
+    }
+
+    const halfWindow = Math.floor(this.MAX_CONTEXT_CHARS / 2);
+    const start = Math.max(0, column - halfWindow);
+    const end = Math.min(line.length, start + this.MAX_CONTEXT_CHARS);
+    const prefix = start > 0 ? '...' : '';
+    const suffix = end < line.length ? '...' : '';
+    return `${prefix}${line.slice(start, end)}${suffix}`;
+  }
+
+  resolveCanonicalScriptId(scriptId, normalizedUrl) {
+    if (!this.shouldDedupeByUrl(normalizedUrl)) {
+      return this.scriptIdAliases.get(scriptId) || scriptId;
+    }
+
+    return this.urlToScriptId.get(normalizedUrl) || this.scriptIdAliases.get(scriptId) || scriptId;
+  }
+
+  shouldDedupeByUrl(normalizedUrl) {
+    return !normalizedUrl.startsWith('inline:') && !normalizedUrl.startsWith('dom_script_');
   }
 }

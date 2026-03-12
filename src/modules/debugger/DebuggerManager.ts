@@ -7,6 +7,7 @@ import { WatchExpressionManager } from './WatchExpressionManager.js';
 import { XHRBreakpointManager } from './XHRBreakpointManager.js';
 import { EventBreakpointManager } from './EventBreakpointManager.js';
 import { BlackboxManager } from './BlackboxManager.js';
+import { createCDPSessionForPage } from '../../utils/playwrightCompat.js';
 export class DebuggerManager {
     collector;
     storage;
@@ -67,7 +68,7 @@ export class DebuggerManager {
         }
         try {
             const page = await this.collector.getActivePage();
-            this.cdpSession = await page.createCDPSession();
+            this.cdpSession = await createCDPSessionForPage(page);
             await this.cdpSession.send('Debugger.enable');
             this.enabled = true;
             this.pausedListener = (params) => this.handlePaused(params);
@@ -167,6 +168,60 @@ export class DebuggerManager {
     isEnabled() {
         return this.enabled;
     }
+    normalizeResolvedLocation(requestedLocation, resolvedLocation) {
+        if (!resolvedLocation || typeof resolvedLocation !== 'object') {
+            return {
+                ...requestedLocation,
+            };
+        }
+        return {
+            ...requestedLocation,
+            scriptId: resolvedLocation.scriptId || requestedLocation.scriptId,
+            lineNumber: typeof resolvedLocation.lineNumber === 'number' ? resolvedLocation.lineNumber : requestedLocation.lineNumber,
+            columnNumber: typeof resolvedLocation.columnNumber === 'number' ? resolvedLocation.columnNumber : requestedLocation.columnNumber,
+        };
+    }
+    async resolveNearestBreakpointLocation(location) {
+        if (!this.enabled || !this.cdpSession) {
+            return location;
+        }
+        try {
+            const result = await this.cdpSession.send('Debugger.getPossibleBreakpoints', {
+                start: {
+                    scriptId: location.scriptId,
+                    lineNumber: location.lineNumber,
+                    columnNumber: location.columnNumber || 0,
+                },
+                end: {
+                    scriptId: location.scriptId,
+                    lineNumber: location.lineNumber + 1,
+                    columnNumber: location.columnNumber || 0,
+                },
+                restrictToFunction: false,
+            });
+            const locations = Array.isArray(result?.locations) ? result.locations : [];
+            if (locations.length === 0) {
+                return location;
+            }
+            const requestedColumn = typeof location.columnNumber === 'number' ? location.columnNumber : 0;
+            return locations
+                .slice()
+                .sort((left, right) => {
+                const leftDistance = Math.abs((left.columnNumber || 0) - requestedColumn);
+                const rightDistance = Math.abs((right.columnNumber || 0) - requestedColumn);
+                if (leftDistance !== rightDistance) {
+                    return leftDistance - rightDistance;
+                }
+                const leftPriority = left.type === 'call' ? 0 : 1;
+                const rightPriority = right.type === 'call' ? 0 : 1;
+                return leftPriority - rightPriority;
+            })[0];
+        }
+        catch (error) {
+            logger.debug('Failed to resolve possible breakpoint locations:', error);
+            return location;
+        }
+    }
     async setBreakpointByUrl(params) {
         if (!this.enabled || !this.cdpSession) {
             throw new Error('Debugger is not enabled. Call init() or enable() first.');
@@ -187,13 +242,16 @@ export class DebuggerManager {
                 columnNumber: params.columnNumber,
                 condition: params.condition,
             });
+            const resolvedLocation = Array.isArray(result?.locations) && result.locations[0]
+                ? result.locations[0]
+                : undefined;
             const breakpointInfo = {
                 breakpointId: result.breakpointId,
-                location: {
+                location: this.normalizeResolvedLocation({
                     url: params.url,
                     lineNumber: params.lineNumber,
                     columnNumber: params.columnNumber,
-                },
+                }, resolvedLocation),
                 condition: params.condition,
                 enabled: true,
                 hitCount: 0,
@@ -236,21 +294,19 @@ export class DebuggerManager {
             throw new Error('columnNumber must be a non-negative number');
         }
         try {
+            const requestedLocation = {
+                scriptId: params.scriptId,
+                lineNumber: params.lineNumber,
+                columnNumber: params.columnNumber,
+            };
+            const resolvedLocation = await this.resolveNearestBreakpointLocation(requestedLocation);
             const result = await this.cdpSession.send('Debugger.setBreakpoint', {
-                location: {
-                    scriptId: params.scriptId,
-                    lineNumber: params.lineNumber,
-                    columnNumber: params.columnNumber,
-                },
+                location: resolvedLocation,
                 condition: params.condition,
             });
             const breakpointInfo = {
                 breakpointId: result.breakpointId,
-                location: {
-                    scriptId: params.scriptId,
-                    lineNumber: params.lineNumber,
-                    columnNumber: params.columnNumber,
-                },
+                location: this.normalizeResolvedLocation(requestedLocation, result?.actualLocation || resolvedLocation),
                 condition: params.condition,
                 enabled: true,
                 hitCount: 0,
@@ -658,9 +714,10 @@ export class DebuggerManager {
     handleBreakpointResolved(params) {
         const bp = this.breakpoints.get(params.breakpointId);
         if (bp) {
+            bp.location = this.normalizeResolvedLocation(bp.location, params.location);
             logger.info('Breakpoint resolved', {
                 breakpointId: params.breakpointId,
-                location: params.location,
+                location: bp.location,
             });
         }
     }

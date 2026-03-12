@@ -1,11 +1,13 @@
 // @ts-nocheck
 
 import { logger } from '../../utils/logger.js';
+import { createCDPSessionForPage } from '../../utils/playwrightCompat.js';
 export class RuntimeInspector {
     collector;
     debuggerManager;
     cdpSession = null;
     enabled = false;
+    ownsCDPSession = false;
     constructor(collector, debuggerManager) {
         this.collector = collector;
         this.debuggerManager = debuggerManager;
@@ -16,8 +18,24 @@ export class RuntimeInspector {
             return;
         }
         try {
-            const page = await this.collector.getActivePage();
-            this.cdpSession = await page.createCDPSession();
+            let sharedSession = null;
+            if (this.debuggerManager && typeof this.debuggerManager.getCDPSession === 'function') {
+                try {
+                    sharedSession = this.debuggerManager.getCDPSession();
+                }
+                catch (_error) {
+                    sharedSession = null;
+                }
+            }
+            if (sharedSession) {
+                this.cdpSession = sharedSession;
+                this.ownsCDPSession = false;
+            }
+            else {
+                const page = await this.collector.getActivePage();
+                this.cdpSession = await createCDPSessionForPage(page);
+                this.ownsCDPSession = true;
+            }
             await this.cdpSession.send('Runtime.enable');
             this.enabled = true;
             logger.info('Runtime inspector enabled');
@@ -66,10 +84,15 @@ export class RuntimeInspector {
             return;
         }
         try {
-            await this.cdpSession.send('Runtime.disable');
+            if (this.ownsCDPSession) {
+                await this.cdpSession.send('Runtime.disable');
+            }
             this.enabled = false;
-            await this.cdpSession.detach();
+            if (this.ownsCDPSession) {
+                await this.cdpSession.detach();
+            }
             this.cdpSession = null;
+            this.ownsCDPSession = false;
             logger.info('Runtime inspector disabled and cleaned up');
         }
         catch (error) {
@@ -269,10 +292,11 @@ export class RuntimeInspector {
         if (this.enabled) {
             await this.disable();
         }
-        if (this.cdpSession) {
+        if (this.cdpSession && this.ownsCDPSession) {
             await this.cdpSession.detach();
-            this.cdpSession = null;
         }
+        this.cdpSession = null;
+        this.ownsCDPSession = false;
         logger.info('Runtime inspector closed');
     }
 }

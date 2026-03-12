@@ -61,7 +61,6 @@ export class MCPServer {
     constructor(config) {
         this.cache = new CacheManager(config.cache);
         this.collector = new CodeCollector(config.browser);
-        this.pageController = new PageController(this.collector);
         this.domInspector = new DOMInspector(this.collector);
         this.scriptManager = new ScriptManager(this.collector);
         this.storage = new StorageService({
@@ -69,13 +68,14 @@ export class MCPServer {
             cacheSize: config.storage.cacheSize,
         });
         this.debuggerManager = new DebuggerManager(this.collector, this.storage, 'legacy');
+        this.pageController = new PageController(this.collector, this.debuggerManager);
         this.consoleMonitor = new ConsoleMonitor(this.collector, this.storage, 'legacy');
         this.runtimeInspector = new RuntimeInspector(this.collector, this.debuggerManager);
         this.llm = new LLMService(config.llm, undefined, {
             storage: this.storage,
             llmCache: config.llmCache,
         });
-        this.browserHandlers = new BrowserToolHandlers(this.collector, this.pageController, this.domInspector, this.scriptManager, this.consoleMonitor, this.llm);
+        this.browserHandlers = new BrowserToolHandlers(this.collector, this.pageController, this.domInspector, this.scriptManager, this.consoleMonitor, this.llm, this.debuggerManager);
         this.debuggerHandlers = new DebuggerToolHandlers(this.debuggerManager, this.runtimeInspector);
         this.advancedHandlers = new AdvancedToolHandlers(this.collector, this.consoleMonitor);
         this.aiHookHandlers = new AIHookToolHandlers(this.pageController);

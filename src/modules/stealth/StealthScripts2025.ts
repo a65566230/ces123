@@ -1,7 +1,11 @@
 // @ts-nocheck
 
 import { logger } from '../../utils/logger.js';
+import { addInitScriptCompat, setUserAgentCompat } from '../../utils/playwrightCompat.js';
 export class StealthScripts2025 {
+    static async addInit(page, script, arg) {
+        return addInitScriptCompat(page, script, arg);
+    }
     static async injectAll(page) {
         logger.info('🛡️ 注入2024-2025最新反检测脚本...');
         await Promise.all([
@@ -19,7 +23,7 @@ export class StealthScripts2025 {
         logger.info('✅ 反检测脚本注入完成');
     }
     static async hideWebDriver(page) {
-        await page.evaluateOnNewDocument(() => {
+        await this.addInit(page, () => {
             const originalNavigator = navigator;
             delete Object.getPrototypeOf(originalNavigator).webdriver;
             Object.defineProperty(navigator, 'webdriver', {
@@ -34,7 +38,7 @@ export class StealthScripts2025 {
         });
     }
     static async mockChrome(page) {
-        await page.evaluateOnNewDocument(() => {
+        await this.addInit(page, () => {
             window.chrome = {
                 runtime: {
                     connect: () => { },
@@ -74,7 +78,7 @@ export class StealthScripts2025 {
         });
     }
     static async mockPlugins(page) {
-        await page.evaluateOnNewDocument(() => {
+        await this.addInit(page, () => {
             Object.defineProperty(navigator, 'plugins', {
                 get: () => [
                     {
@@ -104,7 +108,7 @@ export class StealthScripts2025 {
         });
     }
     static async fixPermissions(page) {
-        await page.evaluateOnNewDocument(() => {
+        await this.addInit(page, () => {
             const originalQuery = window.navigator.permissions.query;
             window.navigator.permissions.query = (parameters) => parameters.name === 'notifications'
                 ? Promise.resolve({ state: Notification.permission })
@@ -112,7 +116,7 @@ export class StealthScripts2025 {
         });
     }
     static async mockCanvas(page) {
-        await page.evaluateOnNewDocument(() => {
+        await this.addInit(page, () => {
             const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
             const originalGetImageData = CanvasRenderingContext2D.prototype.getImageData;
             const addNoise = (imageData) => {
@@ -142,7 +146,7 @@ export class StealthScripts2025 {
         });
     }
     static async mockWebGL(page) {
-        await page.evaluateOnNewDocument(() => {
+        await this.addInit(page, () => {
             const getParameter = WebGLRenderingContext.prototype.getParameter;
             WebGLRenderingContext.prototype.getParameter = function (parameter) {
                 if (parameter === 37445) {
@@ -156,7 +160,7 @@ export class StealthScripts2025 {
         });
     }
     static async fixLanguages(page) {
-        await page.evaluateOnNewDocument(() => {
+        await this.addInit(page, () => {
             Object.defineProperty(navigator, 'language', {
                 get: () => 'en-US',
             });
@@ -166,7 +170,7 @@ export class StealthScripts2025 {
         });
     }
     static async mockBattery(page) {
-        await page.evaluateOnNewDocument(() => {
+        await this.addInit(page, () => {
             if ('getBattery' in navigator) {
                 const originalGetBattery = navigator.getBattery;
                 navigator.getBattery = function () {
@@ -182,7 +186,7 @@ export class StealthScripts2025 {
         });
     }
     static async fixMediaDevices(page) {
-        await page.evaluateOnNewDocument(() => {
+        await this.addInit(page, () => {
             if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
                 const originalEnumerateDevices = navigator.mediaDevices.enumerateDevices;
                 navigator.mediaDevices.enumerateDevices = function () {
@@ -212,7 +216,7 @@ export class StealthScripts2025 {
         });
     }
     static async mockNotifications(page) {
-        await page.evaluateOnNewDocument(() => {
+        await this.addInit(page, () => {
             if ('Notification' in window) {
                 Object.defineProperty(Notification, 'permission', {
                     get: () => 'default',
@@ -231,8 +235,8 @@ export class StealthScripts2025 {
             mac: 'MacIntel',
             linux: 'Linux x86_64',
         };
-        await page.setUserAgent(userAgents[platform]);
-        await page.evaluateOnNewDocument((platformValue) => {
+        await setUserAgentCompat(page, userAgents[platform]);
+        await this.addInit(page, (platformValue) => {
             Object.defineProperty(navigator, 'platform', {
                 get: () => platformValue,
             });

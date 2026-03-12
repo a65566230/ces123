@@ -2,10 +2,13 @@
 
 import { logger } from '../../utils/logger.js';
 import { buildNavigationPlan, toPlaywrightWaitUntil } from '../../server/v2/browser/navigation.js';
+import { createCDPSessionForPage } from '../../utils/playwrightCompat.js';
 export class PageController {
     collector;
-    constructor(collector) {
+    debuggerManager;
+    constructor(collector, debuggerManager) {
         this.collector = collector;
+        this.debuggerManager = debuggerManager;
     }
     async applyUserAgentOverride(page, userAgent) {
         if (typeof page.setUserAgent === 'function') {
@@ -44,6 +47,81 @@ export class PageController {
         }
         throw new Error('Page does not support cookie inspection');
     }
+    async createPauseMonitor(page, timeoutMs) {
+        if (this.debuggerManager?.isEnabled?.()) {
+            return {
+                pausedPromise: this.debuggerManager.waitForPaused(timeoutMs).then((state) => ({
+                    reason: state?.reason,
+                    hitBreakpoints: state?.hitBreakpoints,
+                    callFrames: state?.callFrames,
+                })),
+                cleanup: async () => undefined,
+            };
+        }
+        let cdp;
+        try {
+            cdp = await createCDPSessionForPage(page);
+        }
+        catch {
+            return {
+                pausedPromise: null,
+                cleanup: async () => undefined,
+            };
+        }
+        const listeners = [];
+        const attach = (event, handler) => {
+            cdp.on?.(event, handler);
+            listeners.push({ event, handler });
+        };
+        try {
+            await cdp.send('Debugger.enable');
+        }
+        catch {
+            return {
+                pausedPromise: null,
+                cleanup: async () => {
+                    for (const listener of listeners) {
+                        cdp.off?.(listener.event, listener.handler);
+                    }
+                    await cdp.detach?.().catch(() => undefined);
+                },
+            };
+        }
+        const pausedPromise = new Promise((resolve) => {
+            attach('Debugger.paused', (params) => resolve(params));
+        });
+        return {
+            pausedPromise,
+            cleanup: async () => {
+                for (const listener of listeners) {
+                    cdp.off?.(listener.event, listener.handler);
+                }
+                await cdp.send('Debugger.disable').catch(() => undefined);
+                await cdp.detach?.().catch(() => undefined);
+            },
+        };
+    }
+    async buildNavigationSnapshot(page, url, startTime, extra = {}) {
+        const { skipTitle, ...rest } = extra || {};
+        let title = '';
+        if (skipTitle !== true) {
+            try {
+                title = await Promise.race([
+                    page.title(),
+                    new Promise((resolve) => setTimeout(() => resolve(''), 750)),
+                ]);
+            }
+            catch {
+                title = '';
+            }
+        }
+        return {
+            url: page.url() || url,
+            title,
+            loadTime: Date.now() - startTime,
+            ...rest,
+        };
+    }
     async navigate(url, options) {
         const page = await this.collector.getActivePage();
         const startTime = Date.now();
@@ -51,24 +129,46 @@ export class PageController {
         const diagnostics = [];
         let lastError = null;
         for (const attempt of plan.attempts) {
+            const pauseMonitor = await this.createPauseMonitor(page, attempt.timeout || 30000);
             try {
-                await page.goto(url, {
+                const navigationPromise = page.goto(url, {
                     waitUntil: toPlaywrightWaitUntil(attempt.waitUntil),
                     timeout: attempt.timeout || 30000,
-                });
-                const loadTime = Date.now() - startTime;
-                const title = await page.title();
-                const currentUrl = page.url();
-                logger.info(`Navigated to: ${url}`);
-                return {
-                    url: currentUrl,
-                    title,
-                    loadTime,
+                }).then(() => ({ kind: 'completed' })).catch((error) => ({ kind: 'error', error }));
+                const raceResult = pauseMonitor.pausedPromise
+                    ? await Promise.race([
+                        navigationPromise,
+                        pauseMonitor.pausedPromise.then((params) => ({ kind: 'paused', params })),
+                    ])
+                    : await navigationPromise;
+                if (raceResult?.kind === 'paused') {
+                    const snapshot = await this.buildNavigationSnapshot(page, url, startTime, {
+                        waitProfile: plan.waitProfile,
+                        waitUntil: attempt.waitUntil,
+                        navigationAttempts: diagnostics.length + 1,
+                        diagnostics,
+                        interruptedByDebuggerPause: true,
+                        skipTitle: true,
+                        pausedState: {
+                            reason: raceResult.params?.reason,
+                            location: raceResult.params?.callFrames?.[0]?.location,
+                            hitBreakpoints: raceResult.params?.hitBreakpoints,
+                        },
+                    });
+                    logger.info(`Navigation interrupted by debugger pause: ${url}`);
+                    return snapshot;
+                }
+                if (raceResult?.kind === 'error') {
+                    throw raceResult.error;
+                }
+                const snapshot = await this.buildNavigationSnapshot(page, url, startTime, {
                     waitProfile: plan.waitProfile,
                     waitUntil: attempt.waitUntil,
                     navigationAttempts: diagnostics.length + 1,
                     diagnostics,
-                };
+                });
+                logger.info(`Navigated to: ${url}`);
+                return snapshot;
             }
             catch (error) {
                 lastError = error;
@@ -79,26 +179,77 @@ export class PageController {
                     message: error instanceof Error ? error.message : String(error),
                 });
             }
+            finally {
+                await pauseMonitor.cleanup();
+            }
         }
         throw lastError || new Error('Navigation failed');
     }
     async reload(options) {
         const page = await this.collector.getActivePage();
-        const plan = buildNavigationPlan(options || {});
-        await page.reload({
-            waitUntil: toPlaywrightWaitUntil(plan.attempts[0]?.waitUntil || 'networkidle2'),
-            timeout: plan.attempts[0]?.timeout || 30000,
-        });
-        logger.info('Page reloaded');
+        const plan = buildNavigationPlan(options && Object.keys(options).length > 0
+            ? options
+            : { waitProfile: 'interactive', timeout: 10000 });
+        let lastError = null;
+        for (const attempt of plan.attempts) {
+            const pauseMonitor = await this.createPauseMonitor(page, attempt.timeout || 30000);
+            try {
+                const reloadPromise = page.reload({
+                    waitUntil: toPlaywrightWaitUntil(attempt.waitUntil),
+                    timeout: attempt.timeout || 30000,
+                }).then(() => ({ kind: 'completed' })).catch((error) => ({ kind: 'error', error }));
+                const raceResult = pauseMonitor.pausedPromise
+                    ? await Promise.race([
+                        reloadPromise,
+                        pauseMonitor.pausedPromise.then((params) => ({ kind: 'paused', params })),
+                    ])
+                    : await reloadPromise;
+                if (raceResult?.kind === 'paused') {
+                    logger.info('Page reload interrupted by debugger pause');
+                    return {
+                        interruptedByDebuggerPause: true,
+                        pausedState: {
+                            reason: raceResult.params?.reason,
+                            location: raceResult.params?.callFrames?.[0]?.location,
+                            hitBreakpoints: raceResult.params?.hitBreakpoints,
+                        },
+                    };
+                }
+                if (raceResult?.kind === 'error') {
+                    throw raceResult.error;
+                }
+                logger.info('Page reloaded');
+                return;
+            }
+            catch (error) {
+                lastError = error;
+            }
+            finally {
+                await pauseMonitor.cleanup();
+            }
+        }
+        throw lastError || new Error('Reload failed');
     }
     async goBack() {
         const page = await this.collector.getActivePage();
-        await page.goBack();
+        await Promise.race([
+            page.goBack({
+                waitUntil: 'domcontentloaded',
+                timeout: 10000,
+            }).catch(() => undefined),
+            new Promise((resolve) => setTimeout(resolve, 12000)),
+        ]);
         logger.info('Navigated back');
     }
     async goForward() {
         const page = await this.collector.getActivePage();
-        await page.goForward();
+        await Promise.race([
+            page.goForward({
+                waitUntil: 'domcontentloaded',
+                timeout: 10000,
+            }).catch(() => undefined),
+            new Promise((resolve) => setTimeout(resolve, 12000)),
+        ]);
         logger.info('Navigated forward');
     }
     async click(selector, options) {
@@ -119,7 +270,15 @@ export class PageController {
     }
     async select(selector, ...values) {
         const page = await this.collector.getActivePage();
-        await page.select(selector, ...values);
+        if (typeof page.select === 'function') {
+            await page.select(selector, ...values);
+        }
+        else if (typeof page.selectOption === 'function') {
+            await page.selectOption(selector, values.flat());
+        }
+        else {
+            throw new Error('Page does not support select interactions');
+        }
         logger.info(`Selected in ${selector}: ${values.join(', ')}`);
     }
     async hover(selector) {
@@ -333,9 +492,9 @@ export class PageController {
     }
     async setLocalStorage(key, value) {
         const page = await this.collector.getActivePage();
-        await page.evaluate((k, v) => {
-            localStorage.setItem(k, v);
-        }, key, value);
+        await page.evaluate(({ key: storageKey, value: storageValue }) => {
+            localStorage.setItem(storageKey, storageValue);
+        }, { key, value });
         logger.info(`Set localStorage: ${key}`);
     }
     async clearLocalStorage() {

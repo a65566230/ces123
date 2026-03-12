@@ -30,6 +30,15 @@ export class V2MCPServer {
                     legacy: true,
                     execute: async (args) => {
                         const result = await this.legacyBridge.execute(tool.name, args);
+                        if (!Array.isArray(result?.content)) {
+                            return {
+                                content: [{
+                                        type: 'text',
+                                        text: JSON.stringify(result, null, 2),
+                                    }],
+                                isError: result?.success === false || result?.isError === true,
+                            };
+                        }
                         return {
                             content: result.content.map((item) => ({
                                 type: 'text',

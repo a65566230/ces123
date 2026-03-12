@@ -10,6 +10,7 @@ export class DebuggerToolHandlers {
     async handleDebuggerEnable(_args) {
         await this.debuggerManager.init();
         await this.runtimeInspector.init();
+        await this.debuggerManager.initAdvancedFeatures(this.runtimeInspector);
         return {
             content: [{
                     type: 'text',
@@ -241,6 +242,7 @@ export class DebuggerToolHandlers {
                             reason: pausedState.reason,
                             location: pausedState.callFrames[0]?.location,
                             hitBreakpoints: pausedState.hitBreakpoints,
+                            pausedState,
                         }, null, 2),
                     }],
             };
@@ -284,6 +286,7 @@ export class DebuggerToolHandlers {
                         },
                         hitBreakpoints: pausedState.hitBreakpoints,
                         timestamp: pausedState.timestamp,
+                        pausedState,
                     }, null, 2),
                 }],
         };

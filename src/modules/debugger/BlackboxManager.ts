@@ -23,11 +23,17 @@ export class BlackboxManager {
         this.cdpSession = cdpSession;
         logger.info('BlackboxManager initialized with shared CDP session');
     }
+    normalizePattern(urlPattern) {
+        const escaped = String(urlPattern || '')
+            .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+            .replace(/\*/g, '.*');
+        return escaped.length > 0 ? escaped : '.*';
+    }
     async blackboxByPattern(urlPattern) {
         this.blackboxedPatterns.add(urlPattern);
         try {
             await this.cdpSession.send('Debugger.setBlackboxPatterns', {
-                patterns: Array.from(this.blackboxedPatterns),
+                patterns: Array.from(this.blackboxedPatterns).map((pattern) => this.normalizePattern(pattern)),
             });
             logger.info(`Blackboxed pattern: ${urlPattern}`);
         }
@@ -44,7 +50,7 @@ export class BlackboxManager {
         }
         try {
             await this.cdpSession.send('Debugger.setBlackboxPatterns', {
-                patterns: Array.from(this.blackboxedPatterns),
+                patterns: Array.from(this.blackboxedPatterns).map((pattern) => this.normalizePattern(pattern)),
             });
             logger.info(`Unblackboxed pattern: ${urlPattern}`);
             return true;
@@ -61,7 +67,7 @@ export class BlackboxManager {
         }
         try {
             await this.cdpSession.send('Debugger.setBlackboxPatterns', {
-                patterns: Array.from(this.blackboxedPatterns),
+                patterns: Array.from(this.blackboxedPatterns).map((pattern) => this.normalizePattern(pattern)),
             });
             logger.info(`Blackboxed ${BlackboxManager.COMMON_LIBRARY_PATTERNS.length} common library patterns`);
         }

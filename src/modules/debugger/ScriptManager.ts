@@ -1,6 +1,8 @@
 // @ts-nocheck
 
 import { logger } from '../../utils/logger.js';
+import { createCDPSessionForPage } from '../../utils/playwrightCompat.js';
+import { resolveBabelTraverse } from '../../utils/babelTraverse.js';
 export class ScriptManager {
     collector;
     cdpSession = null;
@@ -18,8 +20,7 @@ export class ScriptManager {
             return;
         }
         const page = await this.collector.getActivePage();
-        this.cdpSession = await page.createCDPSession();
-        await this.cdpSession.send('Debugger.enable');
+        this.cdpSession = await createCDPSessionForPage(page);
         this.cdpSession.on('Debugger.scriptParsed', (params) => {
             const scriptInfo = {
                 scriptId: params.scriptId,
@@ -39,11 +40,64 @@ export class ScriptManager {
             }
             logger.debug(`Script parsed: ${params.url || 'inline'} (${params.scriptId})`);
         });
+        await this.cdpSession.send('Debugger.enable');
         this.initialized = true;
         logger.info('ScriptManager initialized');
     }
     async enable() {
         return this.init();
+    }
+    isStaleScriptError(error) {
+        return String(error?.message || error || '').includes('No script for id');
+    }
+    removeScript(scriptId) {
+        const script = this.scripts.get(scriptId);
+        if (!script) {
+            return;
+        }
+        this.scripts.delete(scriptId);
+        this.keywordIndex.delete(scriptId);
+        this.scriptChunks.delete(scriptId);
+        if (script.url && this.scriptsByUrl.has(script.url)) {
+            const remaining = (this.scriptsByUrl.get(script.url) || []).filter((item) => item.scriptId !== scriptId);
+            if (remaining.length > 0) {
+                this.scriptsByUrl.set(script.url, remaining);
+            }
+            else {
+                this.scriptsByUrl.delete(script.url);
+            }
+        }
+    }
+    collectScriptCandidates(scriptId, url) {
+        const candidates = [];
+        const seen = new Set();
+        const pushCandidate = (candidate) => {
+            if (!candidate?.scriptId || seen.has(candidate.scriptId)) {
+                return;
+            }
+            seen.add(candidate.scriptId);
+            candidates.push(candidate);
+        };
+        const direct = typeof scriptId === 'string' ? this.scripts.get(scriptId) : undefined;
+        pushCandidate(direct);
+        const fallbackUrl = typeof url === 'string' && url.length > 0
+            ? url
+            : typeof direct?.url === 'string' && direct.url.length > 0
+                ? direct.url
+                : undefined;
+        if (fallbackUrl) {
+            const urlPattern = fallbackUrl.replace(/\*/g, '.*');
+            const regex = new RegExp(urlPattern);
+            for (const [scriptUrl, scriptList] of this.scriptsByUrl.entries()) {
+                if (!regex.test(scriptUrl)) {
+                    continue;
+                }
+                for (const candidate of scriptList) {
+                    pushCandidate(candidate);
+                }
+            }
+        }
+        return candidates;
     }
     async getAllScripts(includeSource = false, maxScripts = 1000) {
         if (!this.cdpSession) {
@@ -71,6 +125,9 @@ export class ScriptManager {
                         }
                     }
                     catch (error) {
+                        if (this.isStaleScriptError(error)) {
+                            this.removeScript(script.scriptId);
+                        }
                         logger.warn(`Failed to get source for script ${script.scriptId}:`, error);
                         failedCount++;
                     }
@@ -80,51 +137,54 @@ export class ScriptManager {
         }
         else {
             logger.info(`getAllScripts: ${limitedScripts.length} scripts (source not included)`);
+            return limitedScripts.map(({ source, ...metadata }) => ({
+                ...metadata,
+            }));
         }
         return limitedScripts;
     }
-    async getScriptSource(scriptId, url) {
+    async getScriptSource(scriptId, url, options = {}) {
         if (!scriptId && !url) {
             throw new Error('Either scriptId or url parameter must be provided');
         }
         if (!this.cdpSession) {
             await this.init();
         }
-        let targetScript;
-        if (scriptId) {
-            targetScript = this.scripts.get(scriptId);
-        }
-        else if (url) {
-            const urlPattern = url.replace(/\*/g, '.*');
-            const regex = new RegExp(urlPattern);
-            for (const [scriptUrl, scripts] of this.scriptsByUrl.entries()) {
-                if (regex.test(scriptUrl)) {
-                    targetScript = scripts[0];
-                    break;
-                }
-            }
-        }
-        if (!targetScript) {
+        const cacheDerivedData = options?.cacheDerivedData === true;
+        const candidates = this.collectScriptCandidates(scriptId, url);
+        if (candidates.length === 0) {
             logger.warn(`Script not found: ${scriptId || url}`);
             return null;
         }
-        if (!targetScript.source) {
-            try {
-                const { scriptSource } = await this.cdpSession.send('Debugger.getScriptSource', {
-                    scriptId: targetScript.scriptId,
-                });
-                targetScript.source = scriptSource;
-                targetScript.sourceLength = scriptSource.length;
-                this.buildKeywordIndex(targetScript.scriptId, targetScript.url, scriptSource);
-                this.chunkScript(targetScript.scriptId, scriptSource);
+        for (const targetScript of candidates) {
+            if (!targetScript.source) {
+                try {
+                    const { scriptSource } = await this.cdpSession.send('Debugger.getScriptSource', {
+                        scriptId: targetScript.scriptId,
+                    });
+                    targetScript.source = scriptSource;
+                    targetScript.sourceLength = scriptSource.length;
+                }
+                catch (error) {
+                    if (this.isStaleScriptError(error)) {
+                        this.removeScript(targetScript.scriptId);
+                        logger.warn(`Skipping stale script id ${targetScript.scriptId} for ${targetScript.url || 'inline'}`);
+                        continue;
+                    }
+                    logger.error(`Failed to get script source for ${targetScript.scriptId}:`, error);
+                    return null;
+                }
             }
-            catch (error) {
-                logger.error(`Failed to get script source for ${targetScript.scriptId}:`, error);
-                return null;
+            if (cacheDerivedData && targetScript.source && targetScript.derivedDataReady !== true) {
+                this.buildKeywordIndex(targetScript.scriptId, targetScript.url, targetScript.source);
+                this.chunkScript(targetScript.scriptId, targetScript.source);
+                targetScript.derivedDataReady = true;
             }
+            logger.info(`getScriptSource: ${targetScript.url || 'inline'} (${targetScript.sourceLength} bytes)`);
+            return targetScript;
         }
-        logger.info(`getScriptSource: ${targetScript.url || 'inline'} (${targetScript.sourceLength} bytes)`);
-        return targetScript;
+        logger.warn(`Script source unavailable after candidate refresh: ${scriptId || url}`);
+        return null;
     }
     async findScriptsByUrl(urlPattern) {
         if (!this.cdpSession) {
@@ -199,7 +259,7 @@ export class ScriptManager {
         let parser, traverse, generate, t;
         try {
             parser = await import('@babel/parser');
-            traverse = (await import('@babel/traverse')).default;
+            traverse = resolveBabelTraverse(await import('@babel/traverse'));
             generate = (await import('@babel/generator')).default;
             t = await import('@babel/types');
         }

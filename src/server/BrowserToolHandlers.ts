@@ -2,6 +2,7 @@
 
 import { AICaptchaDetector } from '../modules/captcha/AICaptchaDetector.js';
 import { StealthScripts2025 } from '../modules/stealth/StealthScripts2025.js';
+import { summarizeConsoleLogEntry } from '../utils/consolePayloads.js';
 import { DetailedDataManager } from '../utils/detailedDataManager.js';
 import { logger } from '../utils/logger.js';
 export class BrowserToolHandlers {
@@ -10,17 +11,19 @@ export class BrowserToolHandlers {
     domInspector;
     scriptManager;
     consoleMonitor;
+    debuggerManager;
     captchaDetector;
     autoDetectCaptcha = true;
     autoSwitchHeadless = true;
     captchaTimeout = 300000;
     detailedDataManager;
-    constructor(collector, pageController, domInspector, scriptManager, consoleMonitor, llmService) {
+    constructor(collector, pageController, domInspector, scriptManager, consoleMonitor, llmService, debuggerManager) {
         this.collector = collector;
         this.pageController = pageController;
         this.domInspector = domInspector;
         this.scriptManager = scriptManager;
         this.consoleMonitor = consoleMonitor;
+        this.debuggerManager = debuggerManager;
         const screenshotDir = process.env.CAPTCHA_SCREENSHOT_DIR || './screenshots';
         this.captchaDetector = new AICaptchaDetector(llmService, screenshotDir);
         this.detailedDataManager = DetailedDataManager.getInstance();
@@ -120,8 +123,10 @@ export class BrowserToolHandlers {
                 logger.info('✅ Network monitoring already enabled');
             }
         }
-        await this.pageController.navigate(url, { waitUntil, timeout });
-        if (this.autoDetectCaptcha) {
+        const navigation = await this.pageController.navigate(url, { waitUntil, timeout });
+        if (this.autoDetectCaptcha
+            && !navigation?.interruptedByDebuggerPause
+            && !this.debuggerManager?.isPaused?.()) {
             const page = await this.pageController.getPage();
             if (page) {
                 const captchaResult = await this.captchaDetector.detect(page);
@@ -144,14 +149,24 @@ export class BrowserToolHandlers {
                 }
             }
         }
-        const currentUrl = await this.pageController.getURL();
-        const title = await this.pageController.getTitle();
+        const currentUrl = navigation?.url || await this.pageController.getURL();
+        const title = typeof navigation?.title === 'string' ? navigation.title : await this.pageController.getTitle();
         const result = {
             success: true,
             captcha_detected: false,
             url: currentUrl,
             title,
         };
+        if (navigation?.interruptedByDebuggerPause) {
+            result.navigation_interrupted_by_debugger_pause = true;
+            result.paused_state = navigation.pausedState;
+            result.message = 'Navigation interrupted by debugger pause';
+        }
+        else if (this.debuggerManager?.isPaused?.()) {
+            result.navigation_interrupted_by_debugger_pause = true;
+            result.paused_state = this.debuggerManager.getPausedState();
+            result.message = 'Navigation completed, but execution is currently paused in the debugger';
+        }
         if (networkMonitoringEnabled) {
             const networkStatus = this.consoleMonitor.getNetworkStatus();
             result.network_monitoring = {
@@ -170,13 +185,15 @@ export class BrowserToolHandlers {
         };
     }
     async handlePageReload(_args) {
-        await this.pageController.reload();
+        const reload = await this.pageController.reload();
         return {
             content: [{
                     type: 'text',
                     text: JSON.stringify({
                         success: true,
                         message: 'Page reloaded',
+                        interruptedByDebuggerPause: reload?.interruptedByDebuggerPause === true,
+                        pausedState: reload?.pausedState,
                     }, null, 2),
                 }],
         };
@@ -480,7 +497,7 @@ export class BrowserToolHandlers {
         const type = args.type;
         const limit = args.limit;
         const since = args.since;
-        const logs = this.consoleMonitor.getLogs({ type, limit, since });
+        const logs = this.consoleMonitor.getLogs({ type, limit, since }).map((entry) => summarizeConsoleLogEntry(entry));
         const result = {
             count: logs.length,
             logs,

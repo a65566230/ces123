@@ -16,10 +16,15 @@ export class ConsoleMonitor {
     MAX_NETWORK_RECORDS = 500;
     networkListeners = {};
     objectCache = new Map();
+    exceptionsEnabled = false;
     constructor(collector, storage, sessionId) {
         this.collector = collector;
         this.storage = storage;
         this.sessionId = sessionId;
+    }
+    isClosedTargetError(error) {
+        return String(error?.message || error || '').includes('Target page, context or browser has been closed')
+            || String(error?.message || error || '').includes('Session closed');
     }
     async enable(options) {
         if (this.cdpSession) {
@@ -27,7 +32,15 @@ export class ConsoleMonitor {
             return;
         }
         const page = await this.collector.getActivePage();
-        this.cdpSession = await page.createCDPSession();
+        if (typeof page.createCDPSession === 'function') {
+            this.cdpSession = await page.createCDPSession();
+        }
+        else if (typeof page.context === 'function' && typeof page.context()?.newCDPSession === 'function') {
+            this.cdpSession = await page.context().newCDPSession(page);
+        }
+        else {
+            throw new Error('Unable to create a CDP session for the active page');
+        }
         await this.cdpSession.send('Runtime.enable');
         await this.cdpSession.send('Console.enable');
         this.cdpSession.on('Runtime.consoleAPICalled', (params) => {
@@ -37,10 +50,11 @@ export class ConsoleMonitor {
                 lineNumber: frame.lineNumber,
                 columnNumber: frame.columnNumber,
             })) || [];
+            const consoleArgs = Array.isArray(params.args) ? params.args : [];
             const message = {
                 type: params.type,
-                text: params.args.map((arg) => this.formatRemoteObject(arg)).join(' '),
-                args: params.args.map((arg) => this.extractValue(arg)),
+                text: consoleArgs.map((arg) => this.formatRemoteObject(arg)).join(' '),
+                args: consoleArgs.map((arg) => this.extractValue(arg)),
                 timestamp: params.timestamp,
                 stackTrace,
                 url: stackTrace[0]?.url,
@@ -68,7 +82,8 @@ export class ConsoleMonitor {
                 this.messages = this.messages.slice(-Math.floor(this.MAX_MESSAGES / 2));
             }
         });
-        if (options?.enableExceptions !== false) {
+        this.exceptionsEnabled = options?.enableExceptions !== false;
+        if (this.exceptionsEnabled) {
             this.cdpSession.on('Runtime.exceptionThrown', (params) => {
                 const exception = params.exceptionDetails;
                 const stackTrace = exception.stackTrace?.callFrames?.map((frame) => ({
@@ -102,7 +117,7 @@ export class ConsoleMonitor {
         }
         logger.info('ConsoleMonitor enabled', {
             network: options?.enableNetwork || false,
-            exceptions: options?.enableExceptions !== false,
+            exceptions: this.exceptionsEnabled,
         });
     }
     async disable() {
@@ -121,16 +136,40 @@ export class ConsoleMonitor {
                     await this.cdpSession.send('Network.disable');
                 }
                 catch (error) {
-                    logger.warn('Failed to disable Network domain:', error);
+                    if (!this.isClosedTargetError(error)) {
+                        logger.warn('Failed to disable Network domain:', error);
+                    }
                 }
                 this.networkListeners = {};
                 this.networkEnabled = false;
                 logger.info('Network monitoring disabled');
             }
-            await this.cdpSession.send('Console.disable');
-            await this.cdpSession.send('Runtime.disable');
-            await this.cdpSession.detach();
+            try {
+                await this.cdpSession.send('Console.disable');
+            }
+            catch (error) {
+                if (!this.isClosedTargetError(error)) {
+                    logger.warn('Failed to disable Console domain:', error);
+                }
+            }
+            try {
+                await this.cdpSession.send('Runtime.disable');
+            }
+            catch (error) {
+                if (!this.isClosedTargetError(error)) {
+                    logger.warn('Failed to disable Runtime domain:', error);
+                }
+            }
+            try {
+                await this.cdpSession.detach();
+            }
+            catch (error) {
+                if (!this.isClosedTargetError(error)) {
+                    logger.warn('Failed to detach ConsoleMonitor session:', error);
+                }
+            }
             this.cdpSession = null;
+            this.exceptionsEnabled = false;
             logger.info('ConsoleMonitor disabled');
         }
     }
@@ -267,6 +306,16 @@ export class ConsoleMonitor {
     isNetworkEnabled() {
         return this.networkEnabled;
     }
+    isEnabled() {
+        return this.cdpSession !== null;
+    }
+    getMonitorState() {
+        return {
+            enabled: this.isEnabled(),
+            networkEnabled: this.networkEnabled,
+            exceptionsEnabled: this.exceptionsEnabled,
+        };
+    }
     getNetworkStatus() {
         return {
             enabled: this.networkEnabled,
@@ -308,6 +357,21 @@ export class ConsoleMonitor {
             response: this.responses.get(requestId),
         };
     }
+    isExpectedMissingResponseBodyError(error) {
+        const message = String(error?.message || error || '');
+        return message.includes('No resource with given identifier found')
+            || message.includes('Request content was evicted from inspector cache');
+    }
+    responseLikelyHasNoBody(request, response) {
+        const method = String(request?.method || '').toUpperCase();
+        const status = Number(response?.status);
+        return method === 'OPTIONS'
+            || status === 101
+            || status === 103
+            || status === 204
+            || status === 205
+            || status === 304;
+    }
     async getResponseBody(requestId) {
         if (!this.cdpSession) {
             throw new Error('CDP session not initialized');
@@ -326,6 +390,9 @@ export class ConsoleMonitor {
             logger.warn(`Response not yet received for request: ${requestId}. The request may still be pending.`);
             return null;
         }
+        if (this.responseLikelyHasNoBody(request, response)) {
+            return null;
+        }
         try {
             const result = await this.cdpSession.send('Network.getResponseBody', {
                 requestId,
@@ -342,7 +409,8 @@ export class ConsoleMonitor {
             };
         }
         catch (error) {
-            logger.error(`Failed to get response body for ${requestId}:`, {
+            const log = this.isExpectedMissingResponseBodyError(error) ? logger.warn : logger.error;
+            log.call(logger, `Failed to get response body for ${requestId}:`, {
                 url: response.url,
                 status: response.status,
                 error: error.message,
@@ -379,6 +447,27 @@ export class ConsoleMonitor {
         this.responses.clear();
         logger.info('Network records cleared');
     }
+    shouldPersistResponseBody(request, response) {
+        const requestType = String(request?.type || '').toLowerCase();
+        const mimeType = String(response?.mimeType || '').toLowerCase();
+        if (['image', 'stylesheet', 'font', 'media'].includes(requestType)) {
+            return false;
+        }
+        if (mimeType.includes('javascript') ||
+            mimeType.includes('ecmascript') ||
+            mimeType.includes('wasm') ||
+            mimeType.includes('font') ||
+            mimeType.includes('image') ||
+            mimeType.includes('css')) {
+            return false;
+        }
+        return requestType === 'fetch'
+            || requestType === 'xhr'
+            || requestType === 'document'
+            || mimeType.includes('json')
+            || mimeType.includes('xml')
+            || mimeType.startsWith('text/');
+    }
     async persistNetworkRecord(requestId) {
         if (!this.storage || !this.sessionId) {
             return;
@@ -389,7 +478,7 @@ export class ConsoleMonitor {
             return;
         }
         let responseBody;
-        if (response) {
+        if (response && this.shouldPersistResponseBody(request, response)) {
             const body = await this.getResponseBody(requestId).catch(() => null);
             if (body) {
                 responseBody = body.base64Encoded

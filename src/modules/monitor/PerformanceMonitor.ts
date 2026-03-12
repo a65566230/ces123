@@ -1,6 +1,7 @@
 // @ts-nocheck
 
 import { logger } from '../../utils/logger.js';
+import { createCDPSessionForPage } from '../../utils/playwrightCompat.js';
 export class PerformanceMonitor {
     collector;
     cdpSession = null;
@@ -12,7 +13,7 @@ export class PerformanceMonitor {
     async ensureCDPSession() {
         if (!this.cdpSession) {
             const page = await this.collector.getActivePage();
-            this.cdpSession = await page.createCDPSession();
+            this.cdpSession = await createCDPSessionForPage(page);
         }
         return this.cdpSession;
     }

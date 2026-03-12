@@ -54,7 +54,7 @@ export class DOMInspector {
     async querySelectorAll(selector, limit = 50) {
         try {
             const page = await this.collector.getActivePage();
-            const elements = await page.evaluate((sel, maxLimit) => {
+            const elements = await page.evaluate(({ selector: sel, limit: maxLimit }) => {
                 const nodeList = document.querySelectorAll(sel);
                 if (nodeList.length > maxLimit) {
                     console.warn(`[DOMInspector] Found ${nodeList.length} elements for "${sel}", limiting to ${maxLimit}`);
@@ -95,7 +95,7 @@ export class DOMInspector {
                     });
                 }
                 return results;
-            }, selector, limit);
+            }, { selector, limit });
             logger.info(`querySelectorAll: ${selector} - found ${elements.length} elements (limit: ${limit})`);
             return elements;
         }
@@ -107,40 +107,27 @@ export class DOMInspector {
     async getStructure(maxDepth = 3, includeText = true) {
         try {
             const page = await this.collector.getActivePage();
-            const structure = await page.evaluate((depth, withText) => {
-                function buildTree(node, currentDepth) {
-                    if (currentDepth > depth) {
-                        return null;
-                    }
-                    const result = {
-                        tag: node.tagName,
-                        id: node.id || undefined,
-                        class: node.className || undefined,
-                    };
-                    if (withText && node.childNodes.length === 1) {
-                        const firstChild = node.childNodes[0];
-                        if (firstChild && firstChild.nodeType === 3) {
-                            result.text = node.textContent?.trim();
-                        }
-                    }
-                    const children = [];
-                    const childElements = node.children;
-                    for (let i = 0; i < childElements.length; i++) {
-                        const child = childElements[i];
-                        if (child) {
-                            const childTree = buildTree(child, currentDepth + 1);
-                            if (childTree) {
-                                children.push(childTree);
-                            }
-                        }
-                    }
-                    if (children.length > 0) {
-                        result.children = children;
-                    }
-                    return result;
-                }
-                return buildTree(document.body, 0);
-            }, maxDepth, includeText);
+            const html = await page.content();
+            const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+            const bodyContent = bodyMatch?.[1] || '';
+            const childMatches = Array.from(bodyContent.matchAll(/<([A-Za-z0-9-]+)([^>]*)>/g)).slice(0, 60);
+            const children = childMatches.map((match) => {
+                const attrs = match[2] || '';
+                const idMatch = attrs.match(/\sid="([^"]+)"/i);
+                const classMatch = attrs.match(/\sclass="([^"]+)"/i);
+                return {
+                    tag: String(match[1] || '').toUpperCase(),
+                    id: idMatch?.[1],
+                    class: classMatch?.[1],
+                };
+            });
+            const structure = {
+                tag: 'BODY',
+                children: children.slice(0, Math.max(1, maxDepth * 20)),
+            };
+            if (includeText) {
+                structure.text = bodyContent.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 500);
+            }
             logger.info('DOM structure retrieved');
             return structure;
         }
@@ -313,7 +300,7 @@ export class DOMInspector {
     async findByText(text, tag) {
         try {
             const page = await this.collector.getActivePage();
-            const elements = await page.evaluate((searchText, tagName) => {
+            const elements = await page.evaluate(({ searchText, tagName }) => {
                 const xpath = tagName
                     ? `//${tagName}[contains(text(), "${searchText}")]`
                     : `//*[contains(text(), "${searchText}")]`;
@@ -352,7 +339,7 @@ export class DOMInspector {
                     });
                 }
                 return elements;
-            }, text, tag);
+            }, { searchText: text, tagName: tag });
             logger.info(`findByText: "${text}" - found ${elements.length} elements`);
             return elements;
         }

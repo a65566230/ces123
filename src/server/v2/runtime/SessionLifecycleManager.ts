@@ -117,14 +117,20 @@ export class SessionLifecycleManager {
       userAgent: this.options.userAgent,
       viewport: this.options.viewport,
     });
-    const pageController = new PageController(collector);
     const domInspector = new DOMInspector(collector);
     const scriptManager = new ScriptManager(collector);
     const debuggerManager = new DebuggerManager(collector, this.storage, seed.sessionId);
+    const pageController = new PageController(collector, debuggerManager);
     const runtimeInspector = new RuntimeInspector(collector, debuggerManager);
     const consoleMonitor = new ConsoleMonitor(collector, this.storage, seed.sessionId);
     const engine = new PlaywrightEngineAdapter(collector, pageController, scriptManager, consoleMonitor);
     await engine.launch();
+    if (seed.monitorState?.enabled || seed.monitorState?.networkEnabled) {
+      await consoleMonitor.enable({
+        enableNetwork: seed.monitorState?.networkEnabled === true,
+        enableExceptions: seed.monitorState?.exceptionsEnabled !== false,
+      });
+    }
     if (seed.snapshot) {
       await engine.restoreSnapshot(seed.snapshot);
     }
@@ -202,6 +208,13 @@ export class SessionLifecycleManager {
 
     session.health = 'recovering';
     const snapshot = await this.refreshSnapshot(session);
+    const monitorState = session.consoleMonitor?.getMonitorState
+      ? session.consoleMonitor.getMonitorState()
+      : {
+        enabled: false,
+        networkEnabled: false,
+        exceptionsEnabled: true,
+      };
     const choice = this.resolveEngineChoice(preferredEngineType || (session.autoEngine ? 'auto' : session.engineType), reason);
     const currentProfile = session.siteProfile;
     const currentFailure = session.lastFailure;
@@ -219,6 +232,7 @@ export class SessionLifecycleManager {
         label: session.label,
         recoveryCount: (session.recoveryCount || 0) + 1,
         snapshot,
+        monitorState,
         lastFailure: currentFailure,
         siteProfile: currentProfile,
       });

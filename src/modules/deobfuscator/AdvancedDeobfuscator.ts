@@ -2,9 +2,13 @@
 
 import { logger } from '../../utils/logger.js';
 import * as parser from '@babel/parser';
-import traverse from '@babel/traverse';
+import traverseModule from '@babel/traverse';
 import generate from '@babel/generator';
 import * as t from '@babel/types';
+import { resolveBabelTraverse } from '../../utils/babelTraverse.js';
+
+const traverse = resolveBabelTraverse(traverseModule);
+
 export class AdvancedDeobfuscator {
     llm;
     constructor(llm) {

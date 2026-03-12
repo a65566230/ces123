@@ -34,6 +34,9 @@ export class TokenBudgetManager {
   private toolCallHistory: ToolCallRecord[] = [];
   private warnings = new Set<number>();
   private sessionStartTime = Date.now();
+  private readonly MAX_STRING_CHARS = 16_384;
+  private readonly MAX_ARRAY_ITEMS = 20;
+  private readonly MAX_OBJECT_KEYS = 30;
 
   private constructor() {
     logger.info('TokenBudgetManager initialized');
@@ -49,8 +52,8 @@ export class TokenBudgetManager {
 
   recordToolCall(toolName: string, request: unknown, response: unknown): void {
     try {
-      const requestSize = this.calculateSize(request);
-      const responseSize = this.calculateSize(response);
+      const requestSize = this.calculateSize(this.normalizeForBudget(request));
+      const responseSize = this.calculateSize(this.normalizeForBudget(response));
       const totalSize = requestSize + responseSize;
       const estimatedTokens = this.estimateTokens(totalSize);
 
@@ -86,6 +89,45 @@ export class TokenBudgetManager {
       logger.warn('Failed to calculate data size', error);
       return 0;
     }
+  }
+
+  private normalizeForBudget(data: unknown, depth = 0): unknown {
+    if (data === null || data === undefined) {
+      return data;
+    }
+
+    if (typeof data === 'string') {
+      return data.length > this.MAX_STRING_CHARS
+        ? `${data.slice(0, this.MAX_STRING_CHARS)}...<truncated ${data.length - this.MAX_STRING_CHARS} chars>`
+        : data;
+    }
+
+    if (typeof data !== 'object') {
+      return data;
+    }
+
+    if (depth >= 3) {
+      return '[truncated-depth]';
+    }
+
+    if (Array.isArray(data)) {
+      const normalized = data.slice(0, this.MAX_ARRAY_ITEMS).map((item) => this.normalizeForBudget(item, depth + 1));
+      if (data.length > this.MAX_ARRAY_ITEMS) {
+        normalized.push(`[truncated ${data.length - this.MAX_ARRAY_ITEMS} items]`);
+      }
+      return normalized;
+    }
+
+    const entries = Object.entries(data as Record<string, unknown>).slice(0, this.MAX_OBJECT_KEYS);
+    const normalizedObject: Record<string, unknown> = {};
+    for (const [key, value] of entries) {
+      normalizedObject[key] = this.normalizeForBudget(value, depth + 1);
+    }
+    const totalKeys = Object.keys(data as Record<string, unknown>).length;
+    if (totalKeys > this.MAX_OBJECT_KEYS) {
+      normalizedObject.__truncatedKeys = totalKeys - this.MAX_OBJECT_KEYS;
+    }
+    return normalizedObject;
   }
 
   private estimateTokens(bytes: number): number {

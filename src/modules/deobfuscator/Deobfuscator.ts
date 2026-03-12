@@ -1,11 +1,15 @@
 // @ts-nocheck
 
 import * as parser from '@babel/parser';
-import traverse from '@babel/traverse';
+import traverseModule from '@babel/traverse';
 import generate from '@babel/generator';
 import * as t from '@babel/types';
 import crypto from 'crypto';
 import { logger } from '../../utils/logger.js';
+import { resolveBabelTraverse } from '../../utils/babelTraverse.js';
+
+const traverse = resolveBabelTraverse(traverseModule);
+
 export class Deobfuscator {
     llm;
     stringArrays = new Map();

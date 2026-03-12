@@ -1,6 +1,37 @@
 import { SessionScriptInventory } from '../../src/server/v2/runtime/SessionScriptInventory.js';
 
 describe('session script inventory', () => {
+  test('deduplicates repeated external scripts by URL when script ids change', () => {
+    const inventory = new SessionScriptInventory('session-dedupe');
+
+    inventory.recordScripts(
+      [
+        {
+          scriptId: 'script-a',
+          url: 'https://example.test/runtime.js',
+          sourceLength: 128,
+        },
+        {
+          scriptId: 'script-b',
+          url: 'https://example.test/runtime.js',
+          source: 'window.runtime = true;',
+          sourceLength: 22,
+        },
+      ],
+      { indexPolicy: 'deep' }
+    );
+
+    const profile = inventory.getSiteProfile('https://example.test/page');
+    const manifest = inventory.createManifest();
+
+    expect(profile.totalScripts).toBe(1);
+    expect(profile.externalScripts).toBe(1);
+    expect(profile.indexedScripts).toBe(1);
+    expect(manifest.scripts).toHaveLength(1);
+    expect(manifest.scripts[0]?.scriptId).toBe('script-a');
+    expect(manifest.scripts[0]?.sourceLoaded).toBe(true);
+  });
+
   test('builds an indexed search result with chunk references', () => {
     const inventory = new SessionScriptInventory('session-indexed');
 
@@ -49,5 +80,25 @@ describe('session script inventory', () => {
 
     expect(result.truncated).toBe(true);
     expect(result.matches.every((match) => typeof match.chunkRef === 'string')).toBe(true);
+  });
+
+  test('indexes multi-line sources without repeatedly recomputing chunk positions', () => {
+    const inventory = new SessionScriptInventory('session-large-index');
+    const resolveChunkIndexSpy = jest.spyOn(inventory, 'resolveChunkIndex');
+
+    inventory.recordScripts(
+      [
+        {
+          scriptId: 'script-3',
+          url: 'https://example.test/catalog.js',
+          source: Array.from({ length: 150 }, (_, index) => `const token_${index} = "value_${index}";`).join('\n'),
+          sourceLength: 4_800,
+        },
+      ],
+      { indexPolicy: 'deep' }
+    );
+
+    expect(resolveChunkIndexSpy).not.toHaveBeenCalled();
+    expect(inventory.search('token_149', { searchMode: 'substring', maxResults: 5, maxBytes: 4_096 }).matches[0]?.chunkRef).toBe('script-3:0');
   });
 });

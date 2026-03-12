@@ -240,11 +240,11 @@ export class AIHookToolHandlers {
             const hookId = args.hookId;
             const enabled = args.enabled;
             const page = await this.pageController.getPage();
-            await page.evaluate((id, enable) => {
+            await page.evaluate(({ hookId: id, enabled: enable }) => {
                 if (window.__aiHookMetadata && window.__aiHookMetadata[id]) {
                     window.__aiHookMetadata[id].enabled = enable;
                 }
-            }, hookId, enabled);
+            }, { hookId, enabled });
             return {
                 content: [{
                         type: 'text',

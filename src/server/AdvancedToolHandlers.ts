@@ -1,6 +1,7 @@
 // @ts-nocheck
 
 import { PerformanceMonitor } from '../modules/monitor/PerformanceMonitor.js';
+import { summarizeExceptionEntry } from '../utils/consolePayloads.js';
 import { DetailedDataManager } from '../utils/detailedDataManager.js';
 import { logger } from '../utils/logger.js';
 export class AdvancedToolHandlers {
@@ -170,7 +171,7 @@ export class AdvancedToolHandlers {
             requests = requests.filter(req => req.method.toUpperCase() === method.toUpperCase());
         }
         const beforeLimit = requests.length;
-        requests = requests.slice(0, limit);
+        requests = requests.slice(-limit);
         result = {
             success: true,
             message: `✅ Retrieved ${requests.length} network request(s)`,
@@ -384,6 +385,7 @@ export class AdvancedToolHandlers {
             exceptions = exceptions.filter(ex => ex.url?.includes(url));
         }
         exceptions = exceptions.slice(0, limit);
+        exceptions = exceptions.map((entry) => summarizeExceptionEntry(entry));
         return {
             success: true,
             exceptions,

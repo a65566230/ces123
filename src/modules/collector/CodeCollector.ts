@@ -7,6 +7,7 @@ import { SmartCodeCollector } from './SmartCodeCollector.js';
 import { CodeCompressor } from './CodeCompressor.js';
 import { buildNavigationPlan, toPlaywrightWaitUntil } from '../../server/v2/browser/navigation.js';
 import { resolveChromiumExecutablePath } from '../../utils/resolveChromiumExecutablePath.js';
+import { addInitScriptCompat } from '../../utils/playwrightCompat.js';
 export class CodeCollector {
     config;
     browser = null;
@@ -76,6 +77,52 @@ export class CodeCollector {
     getCache() {
         return this.cache;
     }
+    enhancePageCompatibility(page) {
+        if (page.__jshookCompatibilityPatched) {
+            return page;
+        }
+        page.__jshookCompatibilityPatched = true;
+        if (typeof page.createCDPSession !== 'function' && typeof page.context === 'function') {
+            const context = page.context();
+            if (context && typeof context.newCDPSession === 'function') {
+                page.createCDPSession = () => context.newCDPSession(page);
+            }
+        }
+        if (typeof page.evaluateOnNewDocument !== 'function' && typeof page.addInitScript === 'function') {
+            page.evaluateOnNewDocument = (script, arg) => page.addInitScript(script, arg);
+        }
+        if (typeof page.setUserAgent !== 'function') {
+            page.setUserAgent = async (userAgent) => {
+                if (typeof page.context === 'function') {
+                    const context = page.context();
+                    if (context && typeof context.newCDPSession === 'function') {
+                        const cdp = await context.newCDPSession(page);
+                        try {
+                            await cdp.send('Emulation.setUserAgentOverride', { userAgent });
+                        }
+                        finally {
+                            await cdp.detach?.().catch(() => undefined);
+                        }
+                    }
+                }
+                if (typeof page.addInitScript === 'function') {
+                    await page.addInitScript((ua) => {
+                        Object.defineProperty(navigator, 'userAgent', {
+                            configurable: true,
+                            get: () => ua,
+                        });
+                    }, userAgent);
+                }
+            };
+        }
+        if (typeof page.select !== 'function' && typeof page.selectOption === 'function') {
+            page.select = (selector, ...values) => page.selectOption(selector, values.flat());
+        }
+        if (typeof page.setViewport !== 'function' && typeof page.setViewportSize === 'function') {
+            page.setViewport = (viewport) => page.setViewportSize(viewport);
+        }
+        return page;
+    }
     getCompressor() {
         return this.compressor;
     }
@@ -140,19 +187,19 @@ export class CodeCollector {
         }
         const pages = await this.context.pages();
         if (pages.length === 0) {
-            return await this.context.newPage();
+            return this.enhancePageCompatibility(await this.context.newPage());
         }
         const lastPage = pages[pages.length - 1];
         if (!lastPage) {
             throw new Error('Failed to get active page');
         }
-        return lastPage;
+        return this.enhancePageCompatibility(lastPage);
     }
     async createPage(url) {
         if (!this.browser) {
             await this.init();
         }
-        const page = await this.context.newPage();
+        const page = this.enhancePageCompatibility(await this.context.newPage());
         await this.applyAntiDetection(page);
         if (url) {
             const plan = buildNavigationPlan({
@@ -249,16 +296,27 @@ export class CodeCollector {
             page.setDefaultTimeout(options.timeout || this.config.timeout);
             await this.applyAntiDetection(page);
             const files = [];
+            let collectedExternalBytes = 0;
+            let maxFilesWarningShown = false;
+            const isSummaryMode = options.smartMode === 'summary';
+            const summaryMaxFiles = isSummaryMode ? Math.min(this.MAX_FILES_PER_COLLECT, 80) : this.MAX_FILES_PER_COLLECT;
+            const summaryMaxBytes = isSummaryMode
+                ? Math.max(options.maxTotalSize || this.MAX_RESPONSE_SIZE, 256 * 1024)
+                : Number.POSITIVE_INFINITY;
             this.cdpSession = await this.context.newCDPSession(page);
             await this.cdpSession.send('Network.enable');
             await this.cdpSession.send('Runtime.enable');
             this.cdpListeners.responseReceived = async (params) => {
                 const { response, requestId, type } = params;
                 const url = response.url;
-                if (files.length >= this.MAX_FILES_PER_COLLECT) {
-                    if (files.length === this.MAX_FILES_PER_COLLECT) {
-                        logger.warn(`⚠️  Reached max files limit (${this.MAX_FILES_PER_COLLECT}), will skip remaining files`);
+                if (files.length >= summaryMaxFiles) {
+                    if (!maxFilesWarningShown) {
+                        logger.warn(`⚠️  Reached max files limit (${summaryMaxFiles}), will skip remaining files`);
+                        maxFilesWarningShown = true;
                     }
+                    return;
+                }
+                if (isSummaryMode && collectedExternalBytes >= summaryMaxBytes) {
                     return;
                 }
                 this.cleanupCollectedUrls();
@@ -292,6 +350,7 @@ export class CodeCollector {
                                 } : undefined,
                             };
                             files.push(file);
+                            collectedExternalBytes += finalContent.length;
                             this.collectedFilesCache.set(url, file);
                             logger.debug(`[CDP] Collected (${files.length}/${this.MAX_FILES_PER_COLLECT}): ${url} (${(finalContent.length / 1024).toFixed(2)} KB)${truncated ? ' [TRUNCATED]' : ''}`);
                         }
@@ -538,7 +597,7 @@ export class CodeCollector {
     }
     async collectWebWorkers(page) {
         try {
-            await page.evaluateOnNewDocument(() => {
+            await addInitScriptCompat(page, () => {
                 const originalWorker = window.Worker;
                 const workerUrls = [];
                 window.Worker = function (scriptURL, options) {

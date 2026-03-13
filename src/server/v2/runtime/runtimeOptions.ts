@@ -2,12 +2,16 @@
 
 export function resolveRuntimeOptions(config) {
     const defaultBrowserEngine = 'playwright';
+    const toolProfile = ['core', 'expert', 'legacy'].includes(process.env.JSHOOK_TOOL_PROFILE || '')
+        ? process.env.JSHOOK_TOOL_PROFILE
+        : 'expert';
     const browserArgs = process.env.BROWSER_ARGS
         ? process.env.BROWSER_ARGS.split(',').map((item) => item.trim()).filter(Boolean)
         : config.browser.args || [];
     return {
         defaultBrowserEngine,
-        enableLegacyTools: process.env.ENABLE_LEGACY_TOOLS === 'true',
+        toolProfile,
+        enableLegacyTools: process.env.ENABLE_LEGACY_TOOLS === 'true' || toolProfile === 'legacy',
         playwrightExecutablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH,
         browserArgs,
         viewport: {

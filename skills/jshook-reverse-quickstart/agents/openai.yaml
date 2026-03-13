@@ -1,0 +1,4 @@
+interface:
+  display_name: "JSHook Reverse Quickstart"
+  short_description: "Quick workflow-first entrypoint for JSHook MCP"
+  default_prompt: "Use $jshook-reverse-quickstart to handle common JSHook reverse workflows before escalating to the operator skill."

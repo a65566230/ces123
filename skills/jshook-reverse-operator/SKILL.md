@@ -52,8 +52,8 @@ Use `flow.resume-session` when the user provides an existing `sessionId` or asks
 Drop to grouped expert tools only when the workflows are too coarse:
 
 - DOM or runtime details -> `inspect.*`
-- breakpoints or watches -> `debug.*`
-- source maps, diff, or fingerprints -> `analyze.*`
+- breakpoints, watch expressions, structured function tracing, request interception, or debugger-heavy request tracing -> `debug.control`, `debug.breakpoint`, `debug.watch`, `debug.xhr`, `debug.event`, `debug.blackbox`, `debug.evaluate`, `inspect.function-trace`, `inspect.interceptor`
+- source maps, diff, fingerprints, code understanding, or crypto detection -> `analyze.*`
 - direct hook lifecycle control -> `hook.*`
 - session navigation or browser state -> `browser.*`
 

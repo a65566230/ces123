@@ -14,6 +14,7 @@ import { HookManager } from '../../../modules/hook/HookManager.js';
 import { AIHookGenerator } from '../../../modules/hook/AIHookGenerator.js';
 import { HookRAG } from '../../../modules/hook/rag.js';
 import { ConsoleMonitor } from '../../../modules/monitor/ConsoleMonitor.js';
+import { PerformanceMonitor } from '../../../modules/monitor/PerformanceMonitor.js';
 import { LLMService } from '../../../services/LLMService.js';
 import { logger } from '../../../utils/logger.js';
 import { ObfuscationAnalysisService } from '../analysis/ObfuscationAnalysisService.js';
@@ -123,6 +124,7 @@ export class SessionLifecycleManager {
     const pageController = new PageController(collector, debuggerManager);
     const runtimeInspector = new RuntimeInspector(collector, debuggerManager);
     const consoleMonitor = new ConsoleMonitor(collector, this.storage, seed.sessionId);
+    const performanceMonitor = new PerformanceMonitor(collector);
     const engine = new PlaywrightEngineAdapter(collector, pageController, scriptManager, consoleMonitor);
     await engine.launch();
     if (seed.monitorState?.enabled || seed.monitorState?.networkEnabled) {
@@ -161,6 +163,7 @@ export class SessionLifecycleManager {
       debuggerManager,
       runtimeInspector,
       consoleMonitor,
+      performanceMonitor,
       health: 'ready',
       recoverable: true,
       recoveryCount: seed.recoveryCount || 0,
@@ -287,6 +290,12 @@ export class SessionLifecycleManager {
       await session.consoleMonitor?.disable();
     } catch (error) {
       logger.warn('Failed to disable console monitor during session teardown', error);
+    }
+
+    try {
+      await session.performanceMonitor?.close();
+    } catch (error) {
+      logger.warn('Failed to close performance monitor during session teardown', error);
     }
 
     try {

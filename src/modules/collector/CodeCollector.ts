@@ -2,6 +2,7 @@
 
 import { chromium } from 'playwright-core';
 import { logger } from '../../utils/logger.js';
+import { applyBasicNavigatorStealthInit } from '../stealth/basicNavigatorStealth.js';
 import { CodeCache } from './CodeCache.js';
 import { SmartCodeCollector } from './SmartCodeCollector.js';
 import { CodeCompressor } from './CodeCompressor.js';
@@ -214,43 +215,24 @@ export class CodeCollector {
         logger.info(`New page created${url ? `: ${url}` : ''}`);
         return page;
     }
-    async addInitScript(page, script) {
+    async addInitScript(page, script, arg) {
         if (typeof page.addInitScript === 'function') {
-            await page.addInitScript(script);
+            await page.addInitScript(script, arg);
             return;
         }
         if (typeof page.evaluateOnNewDocument === 'function') {
-            await page.evaluateOnNewDocument(script);
+            await page.evaluateOnNewDocument(script, arg);
             return;
         }
         throw new Error('Page does not support init scripts');
     }
     async applyAntiDetection(page) {
-        await this.addInitScript(page, () => {
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => false,
-            });
-            Object.defineProperty(navigator, 'plugins', {
-                get: () => [1, 2, 3, 4, 5],
-            });
-            Object.defineProperty(navigator, 'languages', {
-                get: () => ['en-US', 'en'],
-            });
-            if (!window.chrome) {
-                window.chrome = {
-                    runtime: {},
-                    loadTimes: function () { },
-                    csi: function () { },
-                    app: {},
-                };
-            }
-            const originalQuery = window.navigator.permissions.query;
-            window.navigator.permissions.query = (parameters) => {
-                if (parameters.name === 'notifications') {
-                    return Promise.resolve({ state: 'denied' });
-                }
-                return originalQuery(parameters);
-            };
+        await this.addInitScript(page, applyBasicNavigatorStealthInit, {
+            flagName: 'codeCollectorApplied',
+            webdriverMode: 'false',
+            pluginsMode: 'simple',
+            languages: ['en-US', 'en'],
+            notificationState: 'denied',
         });
     }
     async getStatus() {

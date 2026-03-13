@@ -111,16 +111,23 @@ export class AIHookGenerator {
         return request.condition;
     }
     async planHookRequest(request) {
-        if (request.target && request.behavior) {
+        if (request.target && (request.explicitTarget === true || request.behavior)) {
             return {
                 target: request.target,
-                behavior: request.behavior,
+                behavior: request.behavior || {
+                    captureArgs: true,
+                    captureReturn: true,
+                    captureStack: false,
+                    logToConsole: true,
+                },
                 condition: request.condition,
                 strategy: {
                     source: 'direct',
                     templateId: null,
                     score: 0,
-                    explanation: 'Using explicit target/behavior from request.',
+                    explanation: request.behavior
+                        ? 'Using explicit target/behavior from request.'
+                        : 'Using explicit target from request with default capture behavior.',
                 },
             };
         }
@@ -221,7 +228,12 @@ export class AIHookGenerator {
                 default:
                     throw new Error(`Unsupported target type: ${normalizedRequest.target.type}`);
             }
-            generatedCode = this.wrapWithGlobalStorage(generatedCode, hookId);
+            generatedCode = this.wrapWithGlobalStorage(generatedCode, hookId, {
+                target: normalizedRequest.target,
+                behavior: normalizedRequest.behavior,
+                strategy: planned.strategy,
+                injectionMethod,
+            });
             this.validateGeneratedCode(generatedCode, warnings);
             logger.success(`Hook generated: ${hookId}`);
             return {
@@ -506,13 +518,150 @@ export class AIHookGenerator {
 `;
     }
     generatePropertyHook(request, _hookId) {
-        const code = `// Property Hook not yet implemented for: ${request.description}`;
-        const explanation = 'Property Hook generation is under development';
+        const { target, behavior } = request;
+        const objectPath = target.object || 'window';
+        const propertyName = target.property || target.name || 'value';
+        const propertyLiteral = JSON.stringify(propertyName).replace(/"/g, '\'');
+        const code = `
+// AI Generated Property Hook: ${request.description}
+(function() {
+  function getObjectByPath(path) {
+    const parts = String(path || '').split('.');
+    let obj = globalThis;
+
+    for (const part of parts) {
+      if (!part || part === 'window' || part === 'globalThis' || part === 'self') {
+        continue;
+      }
+      if (!obj || !(part in obj)) {
+        return null;
+      }
+      obj = obj[part];
+    }
+
+    return obj;
+  }
+
+  const targetObject = getObjectByPath(${JSON.stringify(objectPath)});
+  const propertyName = ${JSON.stringify(propertyName)};
+
+  if (!targetObject) {
+    console.warn('[property-hook] Target object not found:', ${JSON.stringify(objectPath)});
+    return;
+  }
+
+  const descriptor = Object.getOwnPropertyDescriptor(targetObject, propertyName) ||
+    Object.getOwnPropertyDescriptor(Object.getPrototypeOf(targetObject) || {}, propertyName);
+
+  let currentValue = descriptor && 'value' in descriptor ? descriptor.value : targetObject[propertyName];
+  const originalGet = descriptor?.get;
+  const originalSet = descriptor?.set;
+
+  Object.defineProperty(targetObject, propertyName, {
+    configurable: true,
+    enumerable: descriptor?.enumerable !== false,
+    get: function() {
+      const value = originalGet ? originalGet.call(this) : currentValue;
+      const hookData = {
+        hookId: '${_hookId}',
+        type: 'property-get',
+        objectPath: ${JSON.stringify(objectPath)},
+        property: ${propertyLiteral},
+        value,
+        timestamp: Date.now(),
+        ${behavior.captureStack ? 'stack: new Error().stack,' : ''}
+      };
+
+      ${behavior.logToConsole ? `console.log('[${_hookId}] Property read:', hookData);` : ''}
+
+      if (!window.__aiHooks) window.__aiHooks = {};
+      if (!window.__aiHooks['${_hookId}']) window.__aiHooks['${_hookId}'] = [];
+      window.__aiHooks['${_hookId}'].push(hookData);
+
+      return value;
+    },
+    set: function(value) {
+      const previousValue = originalGet ? originalGet.call(this) : currentValue;
+      const hookData = {
+        hookId: '${_hookId}',
+        type: 'property-set',
+        objectPath: ${JSON.stringify(objectPath)},
+        property: ${propertyLiteral},
+        previousValue,
+        value,
+        timestamp: Date.now(),
+        ${behavior.captureStack ? 'stack: new Error().stack,' : ''}
+      };
+
+      ${behavior.logToConsole ? `console.log('[${_hookId}] Property write:', hookData);` : ''}
+
+      if (!window.__aiHooks) window.__aiHooks = {};
+      if (!window.__aiHooks['${_hookId}']) window.__aiHooks['${_hookId}'] = [];
+      window.__aiHooks['${_hookId}'].push(hookData);
+
+      ${behavior.blockExecution ? 'return;' : ''}
+
+      if (originalSet) {
+        originalSet.call(this, value);
+      } else {
+        currentValue = value;
+      }
+    }
+  });
+
+  console.log('[${_hookId}] Property Hook installed for:', ${JSON.stringify(objectPath)} + '.' + propertyName);
+})();
+`;
+        const explanation = `Hook generated for property ${objectPath}.${propertyName}`;
         return { code, explanation };
     }
     generateEventHook(request, _hookId) {
-        const code = `// Event Hook not yet implemented for: ${request.description}`;
-        const explanation = 'Event Hook generation is under development';
+        const { target, behavior } = request;
+        const eventName = target.eventName || target.name || 'click';
+        const targetExpression = target.object || target.target || 'document';
+        const eventLiteral = JSON.stringify(eventName).replace(/"/g, '\'');
+        const code = `
+// AI Generated Event Hook: ${request.description}
+(function() {
+  function resolveTarget() {
+    try {
+      return ${targetExpression};
+    } catch (error) {
+      console.warn('[event-hook] Failed to resolve target:', error);
+      return null;
+    }
+  }
+
+  const eventTarget = resolveTarget();
+  const eventName = ${JSON.stringify(eventName)};
+
+  if (!eventTarget || typeof eventTarget.addEventListener !== 'function') {
+    console.warn('[${_hookId}] Event target does not support addEventListener:', ${JSON.stringify(targetExpression)});
+    return;
+  }
+
+  eventTarget.addEventListener(${eventLiteral}, function(event) {
+    const hookData = {
+      hookId: '${_hookId}',
+      type: 'event',
+      eventName,
+      targetExpression: ${JSON.stringify(targetExpression)},
+      timestamp: Date.now(),
+      ${behavior.captureArgs ? 'eventType: event.type, targetTag: event.target?.tagName, targetId: event.target?.id,' : ''}
+      ${behavior.captureStack ? 'stack: new Error().stack,' : ''}
+    };
+
+    ${behavior.logToConsole ? `console.log('[${_hookId}] Event captured:', hookData);` : ''}
+
+    if (!window.__aiHooks) window.__aiHooks = {};
+    if (!window.__aiHooks['${_hookId}']) window.__aiHooks['${_hookId}'] = [];
+    window.__aiHooks['${_hookId}'].push(hookData);
+  }, true);
+
+  console.log('[${_hookId}] Event Hook installed for:', eventName, 'on', ${JSON.stringify(targetExpression)});
+})();
+`;
+        const explanation = `Hook generated for event ${eventName} on ${targetExpression}`;
         return { code, explanation };
     }
     generateCustomHook(request, _hookId) {
@@ -520,7 +669,7 @@ export class AIHookGenerator {
         const explanation = 'Custom Hook code provided by user';
         return { code, explanation };
     }
-    wrapWithGlobalStorage(code, hookId) {
+    wrapWithGlobalStorage(code, hookId, metadata = {}) {
         return `
 // Initialize global hook storage
 if (!window.__aiHooks) {
@@ -532,6 +681,7 @@ window.__aiHookMetadata['${hookId}'] = {
   id: '${hookId}',
   createdAt: Date.now(),
   enabled: true,
+  metadata: ${JSON.stringify(metadata)},
 };
 
 ${code}

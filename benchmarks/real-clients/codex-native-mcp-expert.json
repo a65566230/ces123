@@ -1,0 +1,29 @@
+{
+  "client": "codex",
+  "clientVersion": "cli",
+  "model": "default",
+  "profile": "expert",
+  "transport": "native-mcp",
+  "scenario": "fresh-triage",
+  "success": false,
+  "turnCount": 0,
+  "toolCalls": 0,
+  "result": {},
+  "spawnError": "Error: Invocation aborted after 8 repeated stream disconnects",
+  "rawStatus": 1,
+  "stderr": "2026-03-13T02:53:40.628620Z  WARN codex_core::shell_snapshot: Failed to create shell snapshot for powershell: Shell snapshot not supported yet for PowerShell\n2026-03-13T02:53:43.343844Z  WARN codex_core::codex: stream disconnected - retrying sampling request (1/100 in 182ms)...\n2026-03-13T02:53:45.547598Z  WARN codex_core::codex: stream disconnected - retrying sampling request (2/100 in 372ms)...\n2026-03-13T02:53:46.567260Z  WARN codex_core::codex: stream disconnected - retrying sampling request (3/100 in 877ms)...\n2026-03-13T02:53:48.096927Z  WARN codex_core::codex: stream disconnected - retrying sampling request (4/100 in 1.51s)...\n2026-03-13T02:53:50.439415Z  WARN codex_core::codex: stream disconnected - retrying sampling request (5/100 in 2.891s)...\n2026-03-13T02:53:54.786724Z  WARN codex_core::codex: stream disconnected - retrying sampling request (6/100 in 5.774s)...\n2026-03-13T02:54:01.186622Z  WARN codex_core::codex: stream disconnected - retrying sampling request (7/100 in 12.13s)...\n2026-03-13T02:55:31.947239Z  WARN codex_core::codex: stream disconnected - retrying sampling request (8/100 in 26.547s)...",
+  "terminationReason": "stream-disconnected",
+  "invocationDiagnostics": [
+    {
+      "command": "C:\\Program Files\\nodejs\\node.exe",
+      "shell": false,
+      "spawnError": "Error: Invocation aborted after 8 repeated stream disconnects",
+      "rawStatus": 1,
+      "timedOut": false,
+      "repeatedDisconnects": 8,
+      "attempt": 1,
+      "decision": "abort-benchmark",
+      "decisionReason": "stream-disconnected"
+    }
+  ]
+}

@@ -263,6 +263,14 @@ export class PageController {
     }
     async type(selector, text, options) {
         const page = await this.collector.getActivePage();
+        if (options?.replace === true) {
+            await page.evaluate((sel) => {
+                const element = document.querySelector(sel);
+                if (element && 'value' in element) {
+                    element.value = '';
+                }
+            }, selector);
+        }
         await page.type(selector, text, {
             delay: options?.delay,
         });
@@ -476,33 +484,60 @@ export class PageController {
         logger.info('Network is idle');
     }
     async getLocalStorage() {
+        return this.getStorage('local');
+    }
+    async getSessionStorage() {
+        return this.getStorage('session');
+    }
+    async getStorage(kind) {
         const page = await this.collector.getActivePage();
-        const storage = await page.evaluate(() => {
+        const storage = await page.evaluate((storageKind) => {
+            const target = storageKind === 'session' ? sessionStorage : localStorage;
             const items = {};
-            for (let i = 0; i < localStorage.length; i++) {
-                const key = localStorage.key(i);
+            for (let i = 0; i < target.length; i++) {
+                const key = target.key(i);
                 if (key) {
-                    items[key] = localStorage.getItem(key) || '';
+                    items[key] = target.getItem(key) || '';
                 }
             }
             return items;
-        });
-        logger.info(`Retrieved ${Object.keys(storage).length} localStorage items`);
+        }, kind);
+        logger.info(`Retrieved ${Object.keys(storage).length} ${kind}Storage items`);
         return storage;
     }
     async setLocalStorage(key, value) {
-        const page = await this.collector.getActivePage();
-        await page.evaluate(({ key: storageKey, value: storageValue }) => {
-            localStorage.setItem(storageKey, storageValue);
-        }, { key, value });
+        await this.setStorageEntries('local', { [key]: value });
         logger.info(`Set localStorage: ${key}`);
     }
-    async clearLocalStorage() {
+    async setSessionStorage(key, value) {
+        await this.setStorageEntries('session', { [key]: value });
+        logger.info(`Set sessionStorage: ${key}`);
+    }
+    async setStorageEntries(kind, entries) {
         const page = await this.collector.getActivePage();
-        await page.evaluate(() => {
-            localStorage.clear();
-        });
+        await page.evaluate(({ storageKind, storageEntries }) => {
+            const target = storageKind === 'session' ? sessionStorage : localStorage;
+            Object.entries(storageEntries || {}).forEach(([storageKey, storageValue]) => {
+                target.setItem(storageKey, String(storageValue));
+            });
+        }, { storageKind: kind, storageEntries: entries });
+        logger.info(`Set ${Object.keys(entries || {}).length} ${kind}Storage entries`);
+    }
+    async clearLocalStorage() {
+        await this.clearStorage('local');
         logger.info('LocalStorage cleared');
+    }
+    async clearSessionStorage() {
+        await this.clearStorage('session');
+        logger.info('SessionStorage cleared');
+    }
+    async clearStorage(kind) {
+        const page = await this.collector.getActivePage();
+        await page.evaluate((storageKind) => {
+            const target = storageKind === 'session' ? sessionStorage : localStorage;
+            target.clear();
+        }, kind);
+        logger.info(`${kind}Storage cleared`);
     }
     async pressKey(key) {
         const page = await this.collector.getActivePage();

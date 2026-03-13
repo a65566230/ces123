@@ -14,9 +14,17 @@ Use this guide after the skill triggers and before choosing expert tools.
 | --- | --- | --- | --- |
 | Start a fresh investigation | `flow.collect-site` with `engine="auto"` | `flow.reverse-report` | `browser.navigate`, `inspect.scripts`, `inspect.network` |
 | Continue prior work | `flow.resume-session` | `flow.reverse-report` | `browser.status` |
-| Find request path | `flow.trace-request` | `inspect.network` | `debug.*` if a breakpoint is needed |
-| Rank signing logic | `flow.find-signature-path` | `analyze.bundle-fingerprint` | `inspect.scripts`, `analyze.function-rank` |
-| Generate a hook | `flow.generate-hook` | `hook.inject`, `hook.get-data` | `hook.template`, `hook.export` |
+| Find request path | `flow.trace-request` | `inspect.network`, `inspect.interceptor` | `debug.breakpoint` or `debug.xhr` if a breakpoint is needed |
+| Rank signing logic | `flow.find-signature-path` | `inspect.function-trace`, `analyze.bundle-fingerprint` | `inspect.scripts`, `analyze.rank-functions` |
+| Generate a hook | `flow.generate-hook` | `hook.inject`, `hook.data` | `hook.generate` |
+| Understand suspicious code | `analyze.understand` | `analyze.crypto` | `inspect.scripts`, `flow.reverse-report` |
+| Detect crypto usage | `analyze.crypto` | `flow.find-signature-path` | `inspect.scripts`, `analyze.understand` |
+| Find hot executed scripts | `analyze.coverage` | `inspect.scripts`, `analyze.rank-functions` | `flow.find-signature-path` |
+| Interact with the page directly | `browser.interact` | `browser.status` | legacy page interaction tools only for compatibility |
+| Manage cookies or web storage | `browser.storage` | `browser.status` | legacy storage tools only for compatibility |
+| Capture the current page | `browser.capture` | `browser.status` | legacy screenshot tools only for compatibility |
+| Apply anti-detection setup | `browser.stealth` | `browser.status` | legacy stealth tools only for compatibility |
+| Detect or wait on captcha challenges | `browser.captcha` | `browser.status` | legacy captcha tools only for compatibility |
 | Produce a report | `flow.reverse-report` | report handoff to the user | `inspect.*` or `analyze.*` to fill gaps |
 | Inspect source maps | `analyze.source-map` | `analyze.script-diff` | `inspect.scripts` |
 | Compare bundles | `analyze.script-diff` | `analyze.bundle-fingerprint` | `inspect.scripts` |
@@ -32,6 +40,7 @@ Start with grouped tools instead of `flow.*` when the user explicitly asks for:
 - a raw script list or source payload
 - a runtime expression evaluation
 - a breakpoint, pause, resume, or watch expression
+- XHR, event-listener, or blackbox debugger controls
 - a direct hook injection/export action
 
 Prefer a Playwright session recovery before deep expert tools when the current session was created with `engine="auto"` and the task now requires:

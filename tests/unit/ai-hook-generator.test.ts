@@ -120,4 +120,58 @@ describe('AIHookGenerator', () => {
     expect(generated.generatedCode).toContain('csrf');
     expect(generated.generatedCode).not.toContain("anonymous (scriptId 26 line 15");
   });
+
+  test('generates a property hook that observes reads and writes on a derived field target', async () => {
+    const generator = new AIHookGenerator();
+
+    const generated = await generator.generateHook({
+      description: 'trace final vkey property writes',
+      target: {
+        type: 'property',
+        object: 'window.basicFixture',
+        property: 'vkey',
+        name: 'vkey',
+      },
+      explicitTarget: true,
+      behavior: {
+        captureArgs: true,
+        captureReturn: true,
+        captureStack: true,
+        logToConsole: true,
+      },
+    });
+
+    expect(generated.success).toBe(true);
+    expect(generated.explanation).not.toContain('under development');
+    expect(generated.generatedCode).toContain('Object.defineProperty');
+    expect(generated.generatedCode).toContain('window.basicFixture');
+    expect(generated.generatedCode).toContain("'vkey'");
+    expect(generated.generatedCode).toContain('__aiHooks');
+  });
+
+  test('generates an event hook that captures high-value runtime events without falling back to a stub', async () => {
+    const generator = new AIHookGenerator();
+
+    const generated = await generator.generateHook({
+      description: 'capture click driven signature flow',
+      target: {
+        type: 'event',
+        object: 'document',
+        name: 'click',
+      },
+      explicitTarget: true,
+      behavior: {
+        captureArgs: true,
+        captureReturn: false,
+        captureStack: true,
+        logToConsole: true,
+      },
+    });
+
+    expect(generated.success).toBe(true);
+    expect(generated.explanation).not.toContain('under development');
+    expect(generated.generatedCode).toContain("addEventListener('click'");
+    expect(generated.generatedCode).toContain('__aiHooks');
+    expect(generated.generatedCode).toContain('event.type');
+  });
 });

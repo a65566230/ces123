@@ -12,6 +12,9 @@ export class ScriptManager {
     keywordIndex = new Map();
     scriptChunks = new Map();
     CHUNK_SIZE = 100 * 1024;
+    MAX_URL_HISTORY = 8;
+    inlineScriptIds = [];
+    MAX_INLINE_HISTORY = 32;
     constructor(collector) {
         this.collector = collector;
     }
@@ -36,7 +39,27 @@ export class ScriptManager {
                 if (!this.scriptsByUrl.has(params.url)) {
                     this.scriptsByUrl.set(params.url, []);
                 }
-                this.scriptsByUrl.get(params.url).push(scriptInfo);
+                const history = this.scriptsByUrl.get(params.url).filter((item) => item.scriptId !== params.scriptId);
+                history.push(scriptInfo);
+                if (history.length > this.MAX_URL_HISTORY) {
+                    const overflow = history.splice(0, history.length - this.MAX_URL_HISTORY);
+                    for (const staleEntry of overflow) {
+                        this.scripts.delete(staleEntry.scriptId);
+                        this.keywordIndex.delete(staleEntry.scriptId);
+                        this.scriptChunks.delete(staleEntry.scriptId);
+                    }
+                }
+                this.scriptsByUrl.set(params.url, history);
+            }
+            else {
+                this.inlineScriptIds = this.inlineScriptIds.filter((item) => item !== params.scriptId);
+                this.inlineScriptIds.push(params.scriptId);
+                if (this.inlineScriptIds.length > this.MAX_INLINE_HISTORY) {
+                    const overflow = this.inlineScriptIds.splice(0, this.inlineScriptIds.length - this.MAX_INLINE_HISTORY);
+                    for (const staleScriptId of overflow) {
+                        this.removeScript(staleScriptId);
+                    }
+                }
             }
             logger.debug(`Script parsed: ${params.url || 'inline'} (${params.scriptId})`);
         });
@@ -56,6 +79,7 @@ export class ScriptManager {
             return;
         }
         this.scripts.delete(scriptId);
+        this.inlineScriptIds = this.inlineScriptIds.filter((item) => item !== scriptId);
         this.keywordIndex.delete(scriptId);
         this.scriptChunks.delete(scriptId);
         if (script.url && this.scriptsByUrl.has(script.url)) {
@@ -92,12 +116,55 @@ export class ScriptManager {
                 if (!regex.test(scriptUrl)) {
                     continue;
                 }
-                for (const candidate of scriptList) {
+                const prioritizedCandidates = [...scriptList].slice(-8).reverse();
+                for (const candidate of prioritizedCandidates) {
                     pushCandidate(candidate);
                 }
             }
         }
         return candidates;
+    }
+    scoreScriptForSelection(script) {
+        let score = 0;
+        if (typeof script?.url === 'string' && script.url.length > 0) {
+            score += 1000;
+        }
+        const sourceLength = Number(script?.sourceLength || 0);
+        if (sourceLength >= 100 * 1024) {
+            score += 120;
+        }
+        else if (sourceLength >= 10 * 1024) {
+            score += 80;
+        }
+        else if (sourceLength >= 1024) {
+            score += 40;
+        }
+        else if (sourceLength >= 128) {
+            score += 10;
+        }
+        return score;
+    }
+    selectScriptsForListing(scripts, maxScripts) {
+        if (scripts.length <= maxScripts) {
+            return scripts;
+        }
+        const indexedScripts = scripts.map((script, index) => ({
+            script,
+            index,
+            score: this.scoreScriptForSelection(script),
+        }));
+        const selected = indexedScripts
+            .slice()
+            .sort((left, right) => {
+            if (right.score !== left.score) {
+                return right.score - left.score;
+            }
+            return right.index - left.index;
+        })
+            .slice(0, maxScripts)
+            .sort((left, right) => left.index - right.index)
+            .map((entry) => entry.script);
+        return selected;
     }
     async getAllScripts(includeSource = false, maxScripts = 1000) {
         if (!this.cdpSession) {
@@ -107,7 +174,7 @@ export class ScriptManager {
         if (scripts.length > maxScripts) {
             logger.warn(`Found ${scripts.length} scripts, limiting to ${maxScripts}. Increase maxScripts parameter if needed.`);
         }
-        const limitedScripts = scripts.slice(0, maxScripts);
+        const limitedScripts = this.selectScriptsForListing(scripts, maxScripts);
         if (includeSource) {
             logger.warn(`Loading source code for ${limitedScripts.length} scripts. This may use significant memory.`);
             let loadedCount = 0;
@@ -408,6 +475,7 @@ export class ScriptManager {
     clear() {
         this.scripts.clear();
         this.scriptsByUrl.clear();
+        this.inlineScriptIds = [];
         this.keywordIndex.clear();
         this.scriptChunks.clear();
         logger.info('✅ ScriptManager cleared - ready for new website');

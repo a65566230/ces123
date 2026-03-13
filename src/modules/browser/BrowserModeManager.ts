@@ -4,6 +4,7 @@ import { chromium } from 'playwright-core';
 import { logger } from '../../utils/logger.js';
 import { CaptchaDetector } from '../captcha/CaptchaDetector.js';
 import { resolveChromiumExecutablePath } from '../../utils/resolveChromiumExecutablePath.js';
+import { applyBasicNavigatorStealthInit } from '../stealth/basicNavigatorStealth.js';
 export class BrowserModeManager {
     browser = null;
     context = null;
@@ -153,78 +154,13 @@ export class BrowserModeManager {
         }
     }
     async injectAntiDetectionScripts(page) {
-        await page.addInitScript(() => {
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => undefined,
-            });
-            window.chrome = {
-                runtime: {
-                    connect: () => { },
-                    sendMessage: () => { },
-                    onMessage: {
-                        addListener: () => { },
-                        removeListener: () => { },
-                    },
-                },
-                loadTimes: function () {
-                    return {
-                        commitLoadTime: Date.now() / 1000,
-                        connectionInfo: 'http/1.1',
-                        finishDocumentLoadTime: Date.now() / 1000,
-                        finishLoadTime: Date.now() / 1000,
-                        firstPaintAfterLoadTime: 0,
-                        firstPaintTime: Date.now() / 1000,
-                        navigationType: 'Other',
-                        npnNegotiatedProtocol: 'unknown',
-                        requestTime: 0,
-                        startLoadTime: Date.now() / 1000,
-                        wasAlternateProtocolAvailable: false,
-                        wasFetchedViaSpdy: false,
-                        wasNpnNegotiated: false,
-                    };
-                },
-                csi: function () {
-                    return {
-                        onloadT: Date.now(),
-                        pageT: Date.now(),
-                        startE: Date.now(),
-                        tran: 15,
-                    };
-                },
-            };
-            Object.defineProperty(navigator, 'plugins', {
-                get: () => [
-                    {
-                        0: { type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' },
-                        description: 'Portable Document Format',
-                        filename: 'internal-pdf-viewer',
-                        length: 1,
-                        name: 'Chrome PDF Plugin',
-                    },
-                    {
-                        0: { type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: '' },
-                        description: '',
-                        filename: 'internal-pdf-viewer',
-                        length: 1,
-                        name: 'Chrome PDF Viewer',
-                    },
-                    {
-                        0: { type: 'application/x-nacl', suffixes: '', description: 'Native Client Executable' },
-                        1: { type: 'application/x-pnacl', suffixes: '', description: 'Portable Native Client Executable' },
-                        description: '',
-                        filename: 'internal-nacl-plugin',
-                        length: 2,
-                        name: 'Native Client',
-                    },
-                ],
-            });
-            const originalQuery = window.navigator.permissions.query;
-            window.navigator.permissions.query = (parameters) => parameters.name === 'notifications'
-                ? Promise.resolve({ state: Notification.permission })
-                : originalQuery(parameters);
-            Object.defineProperty(navigator, 'languages', {
-                get: () => ['en-US', 'en'],
-            });
+        await page.addInitScript(applyBasicNavigatorStealthInit, {
+            flagName: 'browserModeManagerApplied',
+            webdriverMode: 'undefined',
+            pluginsMode: 'realistic',
+            languages: ['en-US', 'en'],
+            notificationState: 'use-native-permission',
+            chromeProfile: 'rich',
         });
         logger.info('🛡️ 反检测脚本已注入');
     }

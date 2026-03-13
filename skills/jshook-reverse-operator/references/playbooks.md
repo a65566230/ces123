@@ -38,7 +38,7 @@ Goal: understand how a request is formed and where it is sent.
 1. Start with `flow.trace-request`.
 2. If the returned network evidence is enough, summarize it.
 3. If not, inspect raw traffic with `inspect.network`.
-4. If runtime correlation is needed, use `debug.*` to pause at the relevant request path.
+4. If runtime correlation is needed, use `debug.breakpoint`, `debug.watch`, or `debug.xhr` around the relevant request path.
 
 ## Signature path discovery
 
@@ -66,7 +66,7 @@ Goal: observe arguments, return values, or side effects around a target API or f
 1. Generate the hook with `flow.generate-hook`.
 2. Inject or export with `hook.*` if the workflow tool does not finish the job.
 3. Reproduce the behavior in the page.
-4. Retrieve captured data with `hook.get-data`.
+4. Retrieve captured data with `hook.data`.
 5. Add the important observations to the report with evidence references.
 
 ## Reverse report

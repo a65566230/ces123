@@ -50,7 +50,11 @@ export class SessionScriptInventory {
       }
 
       const sourceChanged = typeof script.source === 'string' && script.source !== previousSource;
-      if (typeof existing.source === 'string' && indexPolicy !== 'metadata-only' && sourceChanged) {
+      const shouldUpgradeIndex = typeof existing.source === 'string'
+        && indexPolicy !== 'metadata-only'
+        && !Array.from(this.keywordIndex.values()).some((matches) => matches.some((match) => match.scriptId === existing.scriptId));
+      if (typeof existing.source === 'string' && indexPolicy !== 'metadata-only' && (sourceChanged || shouldUpgradeIndex)) {
+        this.clearKeywordIndexForScript(existing.scriptId);
         this.indexScript(existing, { indexPolicy });
         if (this.storage) {
           void this.storage.storeScriptChunkBatch(this.sessionId, this.chunks.get(existing.scriptId) || []);
@@ -170,7 +174,7 @@ export class SessionScriptInventory {
       matches = this.searchIndexed(keyword, maxResults);
       if (matches.length === 0) {
         matches = this.searchByScan(keyword, { maxResults });
-        resolvedMode = 'indexed';
+        resolvedMode = 'scan';
       }
     } else if (searchMode === 'regex') {
       matches = this.searchByScan(keyword, {
@@ -371,6 +375,19 @@ export class SessionScriptInventory {
     }
 
     return matches;
+  }
+
+  clearKeywordIndexForScript(scriptId) {
+    for (const [term, matches] of this.keywordIndex.entries()) {
+      const filtered = matches.filter((entry) => entry.scriptId !== scriptId);
+      if (filtered.length === 0) {
+        this.keywordIndex.delete(term);
+        continue;
+      }
+      if (filtered.length !== matches.length) {
+        this.keywordIndex.set(term, filtered);
+      }
+    }
   }
 
   shouldBuildKeywordIndex(entry, indexPolicy) {

@@ -57,7 +57,7 @@ export function getConfig(): Config {
     },
     mcp: {
       name: process.env.MCP_SERVER_NAME || 'jshook-reverse-tool',
-      version: process.env.MCP_SERVER_VERSION || '2.0.0',
+      version: process.env.MCP_SERVER_VERSION || '2.0.1',
     },
     cache: {
       enabled: process.env.ENABLE_CACHE === 'true',

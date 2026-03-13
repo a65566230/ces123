@@ -101,4 +101,108 @@ describe('session script inventory', () => {
     expect(resolveChunkIndexSpy).not.toHaveBeenCalled();
     expect(inventory.search('token_149', { searchMode: 'substring', maxResults: 5, maxBytes: 4_096 }).matches[0]?.chunkRef).toBe('script-3:0');
   });
+
+  test('reports scan mode when indexed search falls back to source scanning', () => {
+    const inventory = new SessionScriptInventory('session-indexed-fallback');
+
+    inventory.recordScripts(
+      [
+        {
+          scriptId: 'script-4',
+          url: 'https://example.test/raw.js',
+          source: 'const dynamicNeedle = "needle-value";',
+          sourceLength: 36,
+        },
+      ],
+      { indexPolicy: 'metadata-only' }
+    );
+
+    const result = inventory.search('needle-value', {
+      searchMode: 'indexed',
+      maxResults: 5,
+      maxBytes: 1024,
+    });
+
+    expect(result.searchMode).toBe('scan');
+    expect(result.matches[0]?.scriptId).toBe('script-4');
+  });
+
+  test('drops stale keyword index entries when a script source is replaced', () => {
+    const inventory = new SessionScriptInventory('session-source-replace');
+
+    inventory.recordScripts(
+      [
+        {
+          scriptId: 'script-5',
+          url: 'https://example.test/replace.js',
+          source: 'const alphaToken = "alpha";',
+          sourceLength: 27,
+        },
+      ],
+      { indexPolicy: 'deep' }
+    );
+
+    inventory.recordScripts(
+      [
+        {
+          scriptId: 'script-5',
+          url: 'https://example.test/replace.js',
+          source: 'const betaToken = "beta";',
+          sourceLength: 25,
+        },
+      ],
+      { indexPolicy: 'deep' }
+    );
+
+    const alphaResult = inventory.search('alphaToken', {
+      searchMode: 'indexed',
+      maxResults: 5,
+      maxBytes: 1024,
+    });
+    const betaResult = inventory.search('betaToken', {
+      searchMode: 'indexed',
+      maxResults: 5,
+      maxBytes: 1024,
+    });
+
+    expect(alphaResult.matches).toHaveLength(0);
+    expect(betaResult.matches[0]?.scriptId).toBe('script-5');
+  });
+
+  test('builds keyword index when the same source is later upgraded from metadata-only to deep', () => {
+    const inventory = new SessionScriptInventory('session-index-upgrade');
+
+    inventory.recordScripts(
+      [
+        {
+          scriptId: 'script-6',
+          url: 'https://example.test/index-upgrade.js',
+          source: 'const upgradedToken = "ready";',
+          sourceLength: 30,
+        },
+      ],
+      { indexPolicy: 'metadata-only' }
+    );
+
+    inventory.recordScripts(
+      [
+        {
+          scriptId: 'script-6',
+          url: 'https://example.test/index-upgrade.js',
+          source: 'const upgradedToken = "ready";',
+          sourceLength: 30,
+        },
+      ],
+      { indexPolicy: 'deep' }
+    );
+
+    const result = inventory.search('upgradedToken', {
+      searchMode: 'indexed',
+      maxResults: 5,
+      maxBytes: 1024,
+    });
+
+    expect(result.searchMode).toBe('indexed');
+    expect(result.matches[0]?.scriptId).toBe('script-6');
+  });
 });

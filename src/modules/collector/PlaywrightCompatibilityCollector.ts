@@ -2,6 +2,7 @@
 
 import { BrowserPool } from '../../services/BrowserPool.js';
 import { logger } from '../../utils/logger.js';
+import { applyBasicNavigatorStealthInit } from '../stealth/basicNavigatorStealth.js';
 
 export class PlaywrightCompatibilityCollector {
   sessionId;
@@ -69,31 +70,12 @@ export class PlaywrightCompatibilityCollector {
   }
 
   async applyAntiDetection(page) {
-    await page.evaluateOnNewDocument(() => {
-      Object.defineProperty(navigator, 'webdriver', {
-        get: () => false,
-      });
-      Object.defineProperty(navigator, 'plugins', {
-        get: () => [1, 2, 3, 4, 5],
-      });
-      Object.defineProperty(navigator, 'languages', {
-        get: () => ['en-US', 'en'],
-      });
-      if (!window.chrome) {
-        window.chrome = {
-          runtime: {},
-          loadTimes() {},
-          csi() {},
-          app: {},
-        };
-      }
-      const originalQuery = window.navigator.permissions.query;
-      window.navigator.permissions.query = (parameters) => {
-        if (parameters.name === 'notifications') {
-          return Promise.resolve({ state: 'denied' });
-        }
-        return originalQuery(parameters);
-      };
+    await page.evaluateOnNewDocument(applyBasicNavigatorStealthInit, {
+      flagName: 'playwrightCollectorApplied',
+      webdriverMode: 'false',
+      pluginsMode: 'simple',
+      languages: ['en-US', 'en'],
+      notificationState: 'denied',
     });
     logger.info('Playwright anti-detection scripts installed');
   }

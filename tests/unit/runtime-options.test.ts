@@ -14,5 +14,23 @@ describe('resolveRuntimeOptions', () => {
     const options = resolveRuntimeOptions(createTestConfig());
 
     expect(options.defaultBrowserEngine).toBe('playwright');
+    expect(options.toolProfile).toBe('expert');
+  });
+
+  test('supports tool profile selection from env', () => {
+    process.env.JSHOOK_TOOL_PROFILE = 'core';
+
+    const options = resolveRuntimeOptions(createTestConfig());
+
+    expect(options.toolProfile).toBe('core');
+  });
+
+  test('treats legacy profile as enabling legacy tools', () => {
+    process.env.JSHOOK_TOOL_PROFILE = 'legacy';
+
+    const options = resolveRuntimeOptions(createTestConfig());
+
+    expect(options.toolProfile).toBe('legacy');
+    expect(options.enableLegacyTools).toBe(true);
   });
 });

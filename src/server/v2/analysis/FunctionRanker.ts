@@ -17,7 +17,8 @@ export class FunctionRanker {
     const ranked = [];
 
     const inspectNode = (node, name) => {
-      const preview = generateCode(node).code.slice(0, 240);
+      const fullCode = generateCode(node).code;
+      const preview = fullCode.slice(0, 240);
       const reasons = [];
       let score = 0;
 
@@ -25,12 +26,42 @@ export class FunctionRanker {
         [/sign|signature|token|nonce|timestamp/i, 'request-signing-keywords', 5],
         [/crypto|encrypt|decrypt|hmac|sha|md5/i, 'crypto-keywords', 5],
         [/fetch|xmlhttprequest|authorization|headers/i, 'network-keywords', 4],
-        [/eval|Function\(/i, 'dynamic-execution', 2],
       ]) {
         if (pattern.test(preview)) {
           reasons.push(reason);
           score += weight;
         }
+      }
+
+      for (const [pattern, reason, weight] of [
+        [/\beval\b/i, 'dynamic-execution', 2],
+        [/\bFunction\s*\(/, 'dynamic-execution', 2],
+      ]) {
+        if (pattern.test(fullCode)) {
+          reasons.push(reason);
+          score += weight;
+        }
+      }
+
+      const parameterCount = Array.isArray(node.params) ? node.params.length : 0;
+      if (parameterCount >= 2) {
+        reasons.push('multi-parameter-flow');
+        score += 1;
+      }
+
+      if (/\{[\s\S]{0,240}:\s*/.test(fullCode)) {
+        reasons.push('object-assembly');
+        score += 2;
+      }
+
+      if (/\.\w+\s*=|\[['"][^'"]+['"]\]\s*=/.test(fullCode)) {
+        reasons.push('property-write-adjacent');
+        score += 2;
+      }
+
+      if (/btoa|atob|JSON\.stringify|TextEncoder|Uint8Array|Buffer\.from|crypto\.subtle/i.test(fullCode)) {
+        reasons.push('encoding-transform');
+        score += 2;
       }
 
       if (preview.length > 180) {

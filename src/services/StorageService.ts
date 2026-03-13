@@ -215,7 +215,7 @@ export class StorageService {
       CREATE TABLE IF NOT EXISTS requests (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         session_id TEXT NOT NULL,
-        request_id TEXT NOT NULL UNIQUE,
+        request_id TEXT NOT NULL,
         url TEXT NOT NULL,
         method TEXT NOT NULL,
         type TEXT,
@@ -229,7 +229,8 @@ export class StorageService {
         mime_type TEXT,
         request_timestamp INTEGER NOT NULL,
         response_timestamp INTEGER,
-        from_cache INTEGER NOT NULL DEFAULT 0
+        from_cache INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(session_id, request_id)
       );
 
       CREATE INDEX IF NOT EXISTS idx_requests_session_time
@@ -257,10 +258,11 @@ export class StorageService {
         script_id TEXT NOT NULL,
         url TEXT NOT NULL,
         chunk_index INTEGER NOT NULL,
-        chunk_ref TEXT NOT NULL UNIQUE,
+        chunk_ref TEXT NOT NULL,
         content TEXT NOT NULL,
         size INTEGER NOT NULL,
-        created_at INTEGER NOT NULL
+        created_at INTEGER NOT NULL,
+        UNIQUE(session_id, chunk_ref)
       );
 
       CREATE INDEX IF NOT EXISTS idx_script_chunks_session_script
@@ -334,9 +336,227 @@ export class StorageService {
         ON llm_cache(expires_at);
     `);
 
+    this.ensureRequestSessionIsolationSchema(database);
+    this.ensureScriptChunkSessionIsolationSchema(database);
+
     database.pragma('optimize');
 
     this.db = database;
+  }
+
+  private ensureRequestSessionIsolationSchema(database: Database.Database): void {
+    const schemaRow = database.prepare(`
+      SELECT sql
+      FROM sqlite_master
+      WHERE type = 'table' AND name = 'requests'
+    `).get() as { sql?: string } | undefined;
+
+    const schemaSql = String(schemaRow?.sql || '').replace(/\s+/g, ' ').toUpperCase();
+    const usesLegacyGlobalRequestId = schemaSql.includes('REQUEST_ID TEXT NOT NULL UNIQUE');
+    const hasSessionScopedConstraint = schemaSql.includes('UNIQUE(SESSION_ID, REQUEST_ID)');
+
+    if (!usesLegacyGlobalRequestId && hasSessionScopedConstraint) {
+      return;
+    }
+
+    const transaction = database.transaction(() => {
+      database.exec(`
+        DROP TABLE IF EXISTS requests_fts;
+        ALTER TABLE requests RENAME TO requests_legacy_migration;
+
+        CREATE TABLE requests (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT NOT NULL,
+          request_id TEXT NOT NULL,
+          url TEXT NOT NULL,
+          method TEXT NOT NULL,
+          type TEXT,
+          headers_json TEXT,
+          initiator_json TEXT,
+          body_ref TEXT,
+          response_body_ref TEXT,
+          status INTEGER,
+          status_text TEXT,
+          response_headers_json TEXT,
+          mime_type TEXT,
+          request_timestamp INTEGER NOT NULL,
+          response_timestamp INTEGER,
+          from_cache INTEGER NOT NULL DEFAULT 0,
+          UNIQUE(session_id, request_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_requests_session_time
+          ON requests(session_id, request_timestamp DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_requests_session_url_time
+          ON requests(session_id, url, request_timestamp DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_requests_session_method_time
+          ON requests(session_id, method, request_timestamp DESC);
+
+        CREATE VIRTUAL TABLE requests_fts USING fts5(
+          session_id UNINDEXED,
+          request_id UNINDEXED,
+          url,
+          method,
+          headers_text,
+          body_text,
+          response_body_text
+        );
+      `);
+
+      database.exec(`
+        INSERT INTO requests (
+          session_id,
+          request_id,
+          url,
+          method,
+          type,
+          headers_json,
+          initiator_json,
+          body_ref,
+          response_body_ref,
+          status,
+          status_text,
+          response_headers_json,
+          mime_type,
+          request_timestamp,
+          response_timestamp,
+          from_cache
+        )
+        SELECT
+          session_id,
+          request_id,
+          url,
+          method,
+          type,
+          headers_json,
+          initiator_json,
+          body_ref,
+          response_body_ref,
+          status,
+          status_text,
+          response_headers_json,
+          mime_type,
+          request_timestamp,
+          response_timestamp,
+          from_cache
+        FROM requests_legacy_migration
+      `);
+
+      database.exec(`
+        INSERT INTO requests_fts (rowid, session_id, request_id, url, method, headers_text, body_text, response_body_text)
+        SELECT
+          requests.id,
+          requests.session_id,
+          requests.request_id,
+          requests.url,
+          requests.method,
+          COALESCE(requests.headers_json, ''),
+          COALESCE(request_body.body_text, ''),
+          COALESCE(response_body.body_text, '')
+        FROM requests
+        LEFT JOIN request_bodies request_body ON request_body.body_ref = requests.body_ref
+        LEFT JOIN request_bodies response_body ON response_body.body_ref = requests.response_body_ref
+      `);
+
+      database.exec(`
+        DROP TABLE requests_legacy_migration
+      `);
+    });
+
+    transaction();
+  }
+
+  private ensureScriptChunkSessionIsolationSchema(database: Database.Database): void {
+    const schemaRow = database.prepare(`
+      SELECT sql
+      FROM sqlite_master
+      WHERE type = 'table' AND name = 'script_chunks'
+    `).get() as { sql?: string } | undefined;
+
+    const schemaSql = String(schemaRow?.sql || '').replace(/\s+/g, ' ').toUpperCase();
+    const usesLegacyGlobalChunkRef = schemaSql.includes('CHUNK_REF TEXT NOT NULL UNIQUE');
+    const hasSessionScopedConstraint = schemaSql.includes('UNIQUE(SESSION_ID, CHUNK_REF)');
+
+    if (!usesLegacyGlobalChunkRef && hasSessionScopedConstraint) {
+      return;
+    }
+
+    const transaction = database.transaction(() => {
+      database.exec(`
+        DROP TABLE IF EXISTS script_chunks_fts;
+        ALTER TABLE script_chunks RENAME TO script_chunks_legacy_migration;
+
+        CREATE TABLE script_chunks (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT NOT NULL,
+          script_id TEXT NOT NULL,
+          url TEXT NOT NULL,
+          chunk_index INTEGER NOT NULL,
+          chunk_ref TEXT NOT NULL,
+          content TEXT NOT NULL,
+          size INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          UNIQUE(session_id, chunk_ref)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_script_chunks_session_script
+          ON script_chunks(session_id, script_id, chunk_index);
+
+        CREATE INDEX IF NOT EXISTS idx_script_chunks_session_url
+          ON script_chunks(session_id, url, chunk_index);
+
+        CREATE VIRTUAL TABLE script_chunks_fts USING fts5(
+          session_id UNINDEXED,
+          script_id UNINDEXED,
+          chunk_ref UNINDEXED,
+          url,
+          content
+        );
+      `);
+
+      database.exec(`
+        INSERT INTO script_chunks (
+          session_id,
+          script_id,
+          url,
+          chunk_index,
+          chunk_ref,
+          content,
+          size,
+          created_at
+        )
+        SELECT
+          session_id,
+          script_id,
+          url,
+          chunk_index,
+          chunk_ref,
+          content,
+          size,
+          created_at
+        FROM script_chunks_legacy_migration
+      `);
+
+      database.exec(`
+        INSERT INTO script_chunks_fts (rowid, session_id, script_id, chunk_ref, url, content)
+        SELECT
+          id,
+          session_id,
+          script_id,
+          chunk_ref,
+          url,
+          content
+        FROM script_chunks
+      `);
+
+      database.exec(`
+        DROP TABLE script_chunks_legacy_migration
+      `);
+    });
+
+    transaction();
   }
 
   /**
@@ -450,7 +670,7 @@ export class StorageService {
         @responseTimestamp,
         @fromCache
       )
-      ON CONFLICT(request_id) DO UPDATE SET
+      ON CONFLICT(session_id, request_id) DO UPDATE SET
         url = excluded.url,
         method = excluded.method,
         type = excluded.type,
@@ -466,7 +686,7 @@ export class StorageService {
         response_timestamp = excluded.response_timestamp,
         from_cache = excluded.from_cache
     `);
-    const selectRequestRowId = db.prepare('SELECT id FROM requests WHERE request_id = ?');
+    const selectRequestRowId = db.prepare('SELECT id FROM requests WHERE session_id = ? AND request_id = ?');
     const deleteRequestsFts = db.prepare('DELETE FROM requests_fts WHERE rowid = ?');
     const insertRequestsFts = db.prepare(`
       INSERT INTO requests_fts (rowid, session_id, request_id, url, method, headers_text, body_text, response_body_text)
@@ -526,7 +746,7 @@ export class StorageService {
           fromCache: record.response?.fromCache ? 1 : 0,
         });
 
-        const row = selectRequestRowId.get(record.requestId) as { id: number } | undefined;
+        const row = selectRequestRowId.get(sessionId, record.requestId) as { id: number } | undefined;
         if (!row) {
           continue;
         }
@@ -647,19 +867,33 @@ export class StorageService {
     const upsertChunk = db.prepare(`
       INSERT INTO script_chunks (session_id, script_id, url, chunk_index, chunk_ref, content, size, created_at)
       VALUES (@sessionId, @scriptId, @url, @chunkIndex, @chunkRef, @content, @size, @createdAt)
-      ON CONFLICT(chunk_ref) DO UPDATE SET
+      ON CONFLICT(session_id, chunk_ref) DO UPDATE SET
         url = excluded.url,
         content = excluded.content,
         size = excluded.size
     `);
-    const selectChunkRowId = db.prepare('SELECT id FROM script_chunks WHERE chunk_ref = ?');
+    const selectChunkRowId = db.prepare('SELECT id FROM script_chunks WHERE session_id = ? AND chunk_ref = ?');
+    const listChunkRowsByScript = db.prepare(`
+      SELECT id, chunk_ref AS chunkRef
+      FROM script_chunks
+      WHERE session_id = ? AND script_id = ?
+    `);
     const deleteChunkFts = db.prepare('DELETE FROM script_chunks_fts WHERE rowid = ?');
+    const deleteChunkRow = db.prepare('DELETE FROM script_chunks WHERE id = ?');
     const insertChunkFts = db.prepare(`
       INSERT INTO script_chunks_fts (rowid, session_id, script_id, chunk_ref, url, content)
       VALUES (@rowId, @sessionId, @scriptId, @chunkRef, @url, @content)
     `);
 
     const transaction = db.transaction((input: StoredScriptChunk[]) => {
+      const chunkRefsByScript = new Map<string, Set<string>>();
+      for (const chunk of input) {
+        if (!chunkRefsByScript.has(chunk.scriptId)) {
+          chunkRefsByScript.set(chunk.scriptId, new Set());
+        }
+        chunkRefsByScript.get(chunk.scriptId)!.add(chunk.chunkRef);
+      }
+
       for (const chunk of input) {
         upsertChunk.run({
           sessionId,
@@ -672,7 +906,7 @@ export class StorageService {
           createdAt: Date.now(),
         });
 
-        const row = selectChunkRowId.get(chunk.chunkRef) as { id: number } | undefined;
+        const row = selectChunkRowId.get(sessionId, chunk.chunkRef) as { id: number } | undefined;
         if (!row) {
           continue;
         }
@@ -686,6 +920,17 @@ export class StorageService {
           url: chunk.url,
           content: chunk.content,
         });
+      }
+
+      for (const [scriptId, chunkRefs] of chunkRefsByScript.entries()) {
+        const existingRows = listChunkRowsByScript.all(sessionId, scriptId) as Array<{ id: number; chunkRef: string }>;
+        for (const row of existingRows) {
+          if (chunkRefs.has(row.chunkRef)) {
+            continue;
+          }
+          deleteChunkFts.run(row.id);
+          deleteChunkRow.run(row.id);
+        }
       }
     });
 

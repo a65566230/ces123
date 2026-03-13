@@ -159,12 +159,12 @@ describe('v2 live hardening behaviors', () => {
       }),
     );
 
-    const firstCandidate = (result.data as Array<{ recommendedBreakpoints?: Array<{ tool: string; lineNumber?: number }> }>)[0];
+    const firstCandidate = (result.data as Array<{ recommendedActions?: Array<{ tool: string; action?: string; lineNumber?: number }> }>)[0];
 
     expect(result.ok).toBe(true);
-    expect(firstCandidate?.recommendedBreakpoints?.some((item) => item.tool === 'breakpoint_set')).toBe(true);
-    expect(firstCandidate?.recommendedBreakpoints?.some((item) => item.tool === 'watch_add')).toBe(true);
-    expect(firstCandidate?.recommendedBreakpoints?.some((item) => item.tool === 'xhr_breakpoint_set')).toBe(true);
+    expect(firstCandidate?.recommendedActions?.some((item) => item.tool === 'debug.breakpoint' && item.action === 'set')).toBe(true);
+    expect(firstCandidate?.recommendedActions?.some((item) => item.tool === 'debug.watch' && item.action === 'add')).toBe(true);
+    expect(firstCandidate?.recommendedActions?.some((item) => item.tool === 'debug.xhr' && item.action === 'set')).toBe(true);
   });
 
   test('adds pause-on-exception fallback when recent exceptions mention the request pattern', async () => {
@@ -196,10 +196,10 @@ describe('v2 live hardening behaviors', () => {
       }),
     );
 
-    const firstCandidate = (result.data as Array<{ recommendedBreakpoints?: Array<{ tool: string; state?: string }> }>)[0];
+    const firstCandidate = (result.data as Array<{ recommendedActions?: Array<{ tool: string; action?: string; state?: string }> }>)[0];
 
     expect(result.ok).toBe(true);
-    expect(firstCandidate?.recommendedBreakpoints?.some((item) => item.tool === 'breakpoint_set_on_exception' && item.state === 'uncaught')).toBe(true);
+    expect(firstCandidate?.recommendedActions?.some((item) => item.tool === 'debug.breakpoint' && item.action === 'setOnException' && item.state === 'uncaught')).toBe(true);
   });
 
   test('derives a precise breakpoint from an observed exception stack frame', async () => {
@@ -231,10 +231,10 @@ describe('v2 live hardening behaviors', () => {
       }),
     );
 
-    const firstCandidate = (result.data as Array<{ recommendedBreakpoints?: Array<{ verification?: string; lineNumber?: number; columnNumber?: number }> }>)[0];
+    const firstCandidate = (result.data as Array<{ recommendedActions?: Array<{ verification?: string; lineNumber?: number; columnNumber?: number }> }>)[0];
 
     expect(result.ok).toBe(true);
-    expect(firstCandidate?.recommendedBreakpoints?.some((item) => item.verification === 'observed-exception-stack' && item.lineNumber === 3086 && item.columnNumber === 16)).toBe(true);
+    expect(firstCandidate?.recommendedActions?.some((item) => item.verification === 'observed-exception-stack' && item.lineNumber === 3086 && item.columnNumber === 16)).toBe(true);
   });
 
   test('builds a fallback candidate from exception stacks when scripts are not yet hydrated', async () => {
@@ -266,12 +266,12 @@ describe('v2 live hardening behaviors', () => {
       }),
     );
 
-    const firstCandidate = (result.data as Array<{ url?: string; derivedFrom?: string; preferredDebugStrategy?: { verification?: string } }>)[0];
+    const firstCandidate = (result.data as Array<{ url?: string; derivedFrom?: string; preferredAction?: { verification?: string } }>)[0];
 
     expect(result.ok).toBe(true);
     expect(firstCandidate?.url).toBe('https://example.test/main.js');
     expect(firstCandidate?.derivedFrom).toBe('exception-stack');
-    expect(firstCandidate?.preferredDebugStrategy?.verification).toBe('observed-exception-stack');
+    expect(firstCandidate?.preferredAction?.verification).toBe('observed-exception-stack');
   });
 
   test('builds a fallback candidate from paused-state exception descriptions when console exceptions are unavailable', async () => {
@@ -313,12 +313,12 @@ describe('v2 live hardening behaviors', () => {
       }),
     );
 
-    const firstCandidate = (result.data as Array<{ url?: string; derivedFrom?: string; recommendedBreakpoints?: Array<{ verification?: string }> }>)[0];
+    const firstCandidate = (result.data as Array<{ url?: string; derivedFrom?: string; recommendedActions?: Array<{ verification?: string }> }>)[0];
 
     expect(result.ok).toBe(true);
     expect(firstCandidate?.url).toBe('https://example.test/main.js');
     expect(firstCandidate?.derivedFrom).toBe('exception-stack');
-    expect(firstCandidate?.recommendedBreakpoints?.some((item) => item.verification === 'observed-exception-stack')).toBe(true);
+    expect(firstCandidate?.recommendedActions?.some((item) => item.verification === 'observed-exception-stack')).toBe(true);
   });
 
   test('prefers the top frame of an observed exception pause when it matches the target script', async () => {
@@ -360,12 +360,12 @@ describe('v2 live hardening behaviors', () => {
       }),
     );
 
-    const firstCandidate = (result.data as Array<{ preferredDebugStrategy?: { verification?: string; lineNumber?: number; columnNumber?: number } }>)[0];
+    const firstCandidate = (result.data as Array<{ preferredAction?: { verification?: string; lineNumber?: number; columnNumber?: number } }>)[0];
 
     expect(result.ok).toBe(true);
-    expect(firstCandidate?.preferredDebugStrategy?.verification).toBe('observed-exception-top-frame');
-    expect(firstCandidate?.preferredDebugStrategy?.lineNumber).toBe(405);
-    expect(firstCandidate?.preferredDebugStrategy?.columnNumber).toBe(74888);
+    expect(firstCandidate?.preferredAction?.verification).toBe('observed-exception-top-frame');
+    expect(firstCandidate?.preferredAction?.lineNumber).toBe(405);
+    expect(firstCandidate?.preferredAction?.columnNumber).toBe(74888);
   });
 
   test('prefers exception-stack breakpoints over the current paused location for promise rejections', async () => {
@@ -412,12 +412,12 @@ describe('v2 live hardening behaviors', () => {
       }),
     );
 
-    const firstCandidate = (result.data as Array<{ preferredDebugStrategy?: { verification?: string; lineNumber?: number; columnNumber?: number } }>)[0];
+    const firstCandidate = (result.data as Array<{ preferredAction?: { verification?: string; lineNumber?: number; columnNumber?: number } }>)[0];
 
     expect(result.ok).toBe(true);
-    expect(firstCandidate?.preferredDebugStrategy?.verification).toBe('observed-exception-stack');
-    expect(firstCandidate?.preferredDebugStrategy?.lineNumber).toBe(488);
-    expect(firstCandidate?.preferredDebugStrategy?.columnNumber).toBe(23479);
+    expect(firstCandidate?.preferredAction?.verification).toBe('observed-exception-stack');
+    expect(firstCandidate?.preferredAction?.lineNumber).toBe(488);
+    expect(firstCandidate?.preferredAction?.columnNumber).toBe(23479);
   });
 
   test('prefers an observed paused location over heuristic breakpoints when one is available', async () => {
@@ -455,11 +455,11 @@ describe('v2 live hardening behaviors', () => {
       }),
     );
 
-    const firstCandidate = (result.data as Array<{ preferredDebugStrategy?: { verification?: string; lineNumber?: number } }>)[0];
+    const firstCandidate = (result.data as Array<{ preferredAction?: { verification?: string; lineNumber?: number } }>)[0];
 
     expect(result.ok).toBe(true);
-    expect(firstCandidate?.preferredDebugStrategy?.verification).toBe('observed-paused-location');
-    expect(firstCandidate?.preferredDebugStrategy?.lineNumber).toBe(404);
+    expect(firstCandidate?.preferredAction?.verification).toBe('observed-paused-location');
+    expect(firstCandidate?.preferredAction?.lineNumber).toBe(404);
   });
 
   test('prioritizes exact request-pattern hits when ranking signature candidates', async () => {
@@ -491,13 +491,13 @@ describe('v2 live hardening behaviors', () => {
       }),
     );
 
-    const firstCandidate = (result.data as Array<{ scriptId: string; recommendedBreakpoints?: Array<{ keyword?: string; lineNumber?: number }> }>)[0];
+    const firstCandidate = (result.data as Array<{ scriptId: string; recommendedActions?: Array<{ keyword?: string; lineNumber?: number }> }>)[0];
 
     expect(result.ok).toBe(true);
     expect(firstCandidate?.scriptId).toBe('target-script');
-    expect(firstCandidate?.recommendedBreakpoints?.[0]?.keyword?.toLowerCase()).toBe('chatdebugtokenizer');
-    expect(firstCandidate?.recommendedBreakpoints?.[0]?.lineNumber).toBe(1);
-    expect(typeof firstCandidate?.recommendedBreakpoints?.[0]?.columnNumber).toBe('number');
+    expect(firstCandidate?.recommendedActions?.[0]?.keyword?.toLowerCase()).toBe('chatdebugtokenizer');
+    expect(firstCandidate?.recommendedActions?.[0]?.lineNumber).toBe(1);
+    expect(typeof firstCandidate?.recommendedActions?.[0]?.columnNumber).toBe('number');
   });
 
   test('keeps exact keyword-hit candidates even when function ranking fails on that script', async () => {
@@ -529,12 +529,12 @@ describe('v2 live hardening behaviors', () => {
 
     rankSpy.mockRestore();
 
-    const firstCandidate = (result.data as Array<{ scriptId: string; rankedFunctions?: unknown[]; recommendedBreakpoints?: Array<{ keyword?: string }> }>)[0];
+    const firstCandidate = (result.data as Array<{ scriptId: string; rankedFunctions?: unknown[]; recommendedActions?: Array<{ keyword?: string }> }>)[0];
 
     expect(result.ok).toBe(true);
     expect(firstCandidate?.scriptId).toBe('target-script');
     expect(firstCandidate?.rankedFunctions || []).toHaveLength(0);
-    expect(firstCandidate?.recommendedBreakpoints?.[0]?.keyword?.toLowerCase()).toBe('chatdebugtokenizer');
+    expect(firstCandidate?.recommendedActions?.[0]?.keyword?.toLowerCase()).toBe('chatdebugtokenizer');
   });
 
   test('drops generic keyword breakpoint noise when exact request-pattern evidence already exists', async () => {
@@ -564,8 +564,8 @@ describe('v2 live hardening behaviors', () => {
       }),
     );
 
-    const firstCandidate = (result.data as Array<{ recommendedBreakpoints?: Array<{ verification?: string; keyword?: string }> }>)[0];
-    const staticKeywordBreakpoints = (firstCandidate?.recommendedBreakpoints || []).filter((item) => item.verification === 'static-keyword-hit');
+    const firstCandidate = (result.data as Array<{ recommendedActions?: Array<{ verification?: string; keyword?: string }> }>)[0];
+    const staticKeywordBreakpoints = (firstCandidate?.recommendedActions || []).filter((item) => item.verification === 'static-keyword-hit');
 
     expect(result.ok).toBe(true);
     expect(staticKeywordBreakpoints.some((item) => item.keyword === 'sign')).toBe(false);

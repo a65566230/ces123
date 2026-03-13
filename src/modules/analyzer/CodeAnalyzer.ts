@@ -1,9 +1,11 @@
 // @ts-nocheck
 
 import * as parser from '@babel/parser';
-import traverse from '@babel/traverse';
+import traverseModule from '@babel/traverse';
 import * as t from '@babel/types';
+import { resolveBabelTraverse } from '../../utils/babelTraverse.js';
 import { logger } from '../../utils/logger.js';
+const traverse = resolveBabelTraverse(traverseModule);
 export class CodeAnalyzer {
     llm;
     constructor(llm) {

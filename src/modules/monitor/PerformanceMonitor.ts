@@ -7,8 +7,23 @@ export class PerformanceMonitor {
     cdpSession = null;
     coverageEnabled = false;
     profilerEnabled = false;
+    coverageStartedAt = null;
+    lastCoverage = null;
+    lastCoverageCollectedAt = null;
     constructor(collector) {
         this.collector = collector;
+    }
+    getCoverageState() {
+        return {
+            active: this.coverageEnabled,
+            startedAt: this.coverageStartedAt,
+            collectedAt: this.lastCoverageCollectedAt,
+            hasCoverageResult: Array.isArray(this.lastCoverage) && this.lastCoverage.length > 0,
+            totalScripts: Array.isArray(this.lastCoverage) ? this.lastCoverage.length : 0,
+        };
+    }
+    getLastCoverage() {
+        return Array.isArray(this.lastCoverage) ? this.lastCoverage : [];
     }
     async ensureCDPSession() {
         if (!this.cdpSession) {
@@ -74,6 +89,10 @@ export class PerformanceMonitor {
         return timeline;
     }
     async startCoverage(options) {
+        if (this.coverageEnabled) {
+            logger.warn('Code coverage collection already started');
+            return this.getCoverageState();
+        }
         const cdp = await this.ensureCDPSession();
         await cdp.send('Profiler.enable');
         await cdp.send('Profiler.startPreciseCoverage', {
@@ -83,7 +102,11 @@ export class PerformanceMonitor {
             ...options,
         });
         this.coverageEnabled = true;
+        this.coverageStartedAt = new Date().toISOString();
+        this.lastCoverage = null;
+        this.lastCoverageCollectedAt = null;
         logger.info('Code coverage collection started');
+        return this.getCoverageState();
     }
     async stopCoverage() {
         if (!this.coverageEnabled) {
@@ -117,9 +140,13 @@ export class PerformanceMonitor {
                 coveragePercentage: totalBytes > 0 ? (usedBytes / totalBytes) * 100 : 0,
             };
         });
+        this.lastCoverage = coverageInfo;
+        this.lastCoverageCollectedAt = new Date().toISOString();
         logger.success(`Code coverage collected: ${coverageInfo.length} scripts`, {
             totalScripts: coverageInfo.length,
-            avgCoverage: coverageInfo.reduce((sum, info) => sum + info.coveragePercentage, 0) / coverageInfo.length,
+            avgCoverage: coverageInfo.length > 0
+                ? coverageInfo.reduce((sum, info) => sum + info.coveragePercentage, 0) / coverageInfo.length
+                : 0,
         });
         return coverageInfo;
     }
@@ -172,6 +199,8 @@ export class PerformanceMonitor {
             await this.cdpSession.detach();
             this.cdpSession = null;
         }
+        this.coverageEnabled = false;
+        this.coverageStartedAt = null;
         logger.info('PerformanceMonitor closed');
     }
 }

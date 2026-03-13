@@ -105,6 +105,7 @@ export class PlaywrightEngineAdapter {
     const requests = this.consoleMonitor.getNetworkRequests(options);
     const responses = this.consoleMonitor.getNetworkResponses({
       url: options?.url,
+      requestId: options?.requestId,
       limit: options?.limit,
     });
     const stats = this.consoleMonitor.getNetworkStats();

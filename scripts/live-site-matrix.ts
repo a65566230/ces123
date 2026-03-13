@@ -646,6 +646,7 @@ async function runV2Scenario(ctx: MatrixContext, tool: string): Promise<MatrixEn
   const started = Date.now();
   const sessionId = tool === 'browser.launch' ? undefined : await ensureV2Collected(ctx);
   let args: Record<string, unknown>;
+  let directPayload: Record<string, unknown> | undefined;
 
   switch (tool) {
     case 'browser.launch':
@@ -659,6 +660,42 @@ async function runV2Scenario(ctx: MatrixContext, tool: string): Promise<MatrixEn
       break;
     case 'browser.close':
       args = { sessionId };
+      break;
+    case 'browser.storage':
+      await executeTool(ctx, 'browser.storage', {
+        sessionId,
+        action: 'set',
+        target: 'local',
+        entries: { jshookMatrix: '1' },
+      });
+      args = { sessionId, action: 'get', target: 'local' };
+      break;
+    case 'browser.capture':
+      args = {
+        sessionId,
+        action: 'screenshot',
+        path: path.join(ctx.outputDir, 'v2-page.png'),
+        type: 'png',
+        fullPage: false,
+      };
+      break;
+    case 'browser.interact':
+      await executeTool(ctx, 'browser.interact', {
+        sessionId,
+        action: 'click',
+        selector: '#jshook-test-button',
+      });
+      directPayload = await executeTool(ctx, 'inspect.runtime', {
+        sessionId,
+        expression: 'window.__jshookTestHarness.state.buttonClicks',
+      });
+      args = { sessionId, action: 'click', selector: '#jshook-test-button' };
+      break;
+    case 'browser.stealth':
+      args = { sessionId, action: 'apply', platform: 'windows' };
+      break;
+    case 'browser.captcha':
+      args = { sessionId, action: 'config', autoDetectCaptcha: false, autoSwitchHeadless: false, captchaTimeout: 1000 };
       break;
     case 'browser.navigate':
       args = { sessionId, url: ctx.options.url, waitProfile: 'interactive', enableNetworkCapture: true };
@@ -675,6 +712,33 @@ async function runV2Scenario(ctx: MatrixContext, tool: string): Promise<MatrixEn
     case 'inspect.runtime':
       args = { sessionId, expression: 'window.__jshookTestHarness.ping()' };
       break;
+    case 'inspect.function-trace':
+      await executeTool(ctx, 'inspect.function-trace', {
+        sessionId,
+        action: 'start',
+        functionName: '__jshookTestHarness.multiply',
+        captureArgs: true,
+        captureReturn: true,
+      });
+      await executeTool(ctx, 'inspect.runtime', {
+        sessionId,
+        expression: 'window.__jshookTestHarness.multiply(3, 9)',
+      });
+      args = { sessionId, action: 'read', functionName: '__jshookTestHarness.multiply' };
+      break;
+    case 'inspect.interceptor':
+      await executeTool(ctx, 'inspect.interceptor', {
+        sessionId,
+        action: 'start',
+        type: 'fetch',
+        urlPattern: 'jshook_matrix_probe',
+      });
+      await executeTool(ctx, 'inspect.runtime', {
+        sessionId,
+        expression: `fetch(\`\${location.origin}\${location.pathname}?jshook_matrix_probe=\${Date.now()}\`, { credentials: 'same-origin', cache: 'no-store' }).then((response) => response.status)`,
+      });
+      args = { sessionId, action: 'read', type: 'fetch', urlPattern: 'jshook_matrix_probe' };
+      break;
     case 'inspect.artifact':
       args = { artifactId: ctx.state.artifactId };
       break;
@@ -686,6 +750,41 @@ async function runV2Scenario(ctx: MatrixContext, tool: string): Promise<MatrixEn
       break;
     case 'debug.evaluate':
       args = { sessionId, expression: 'window.__jshookTestHarness.multiply(6, 7)' };
+      break;
+    case 'debug.breakpoint':
+      args = { sessionId, action: 'set', url: ctx.options.url, lineNumber: 0 };
+      break;
+    case 'debug.watch':
+      await executeTool(ctx, 'debug.watch', {
+        sessionId,
+        action: 'add',
+        expression: 'window.__jshookTestHarness.state.buttonClicks',
+        name: 'buttonClicks',
+      });
+      args = { sessionId, action: 'evaluate' };
+      break;
+    case 'debug.xhr':
+      args = { sessionId, action: 'set', urlPattern: 'jshook_matrix_probe' };
+      break;
+    case 'debug.event':
+      args = { sessionId, action: 'set', eventName: 'click' };
+      break;
+    case 'debug.blackbox':
+      args = { sessionId, action: 'addCommon' };
+      break;
+    case 'analyze.understand':
+      args = { code: 'function sign(){ const payload = { signature: "ok" }; return payload.signature; }', focus: 'security' };
+      break;
+    case 'analyze.crypto':
+      args = { code: 'function digest(input){ return CryptoJS.MD5(input).toString(); }', useAI: false };
+      break;
+    case 'analyze.coverage':
+      await executeTool(ctx, 'analyze.coverage', { sessionId, action: 'start' });
+      await executeTool(ctx, 'inspect.runtime', {
+        sessionId,
+        expression: 'Promise.all([window.__jshookTestHarness.multiply(4, 8), fetch(`${location.origin}${location.pathname}?jshook_matrix_cov=${Date.now()}`, { credentials: "same-origin", cache: "no-store" })])',
+      });
+      args = { sessionId, action: 'stop', maxScripts: 3 };
       break;
     case 'analyze.bundle-fingerprint':
       args = { code: 'function sign(){ return "token"; }' };
@@ -704,12 +803,18 @@ async function runV2Scenario(ctx: MatrixContext, tool: string): Promise<MatrixEn
       args = { code: 'var _0xabc=["token"];function signer(){return _0xabc[0];}', includeExplanation: false };
       break;
     case 'hook.generate':
-      args = { sessionId, description: 'Hook window.__jshookTestHarness.multiply and capture args/return values' };
+      args = {
+        sessionId,
+        description: 'Hook window.__jshookTestHarness.multiply and capture args/return values',
+        targetField: 'result',
+        preferredHookTypes: ['object-method', 'function'],
+      };
       break;
     case 'hook.inject':
       ctx.state.hookId = 'v2-matrix-hook';
       args = {
         sessionId,
+        injectStrategy: 'runtime',
         code: `(() => {
           const hookId = '${ctx.state.hookId}';
           window.__aiHooks = window.__aiHooks || {};
@@ -730,19 +835,26 @@ async function runV2Scenario(ctx: MatrixContext, tool: string): Promise<MatrixEn
       break;
     case 'hook.data':
       await executeTool(ctx, 'inspect.runtime', { sessionId, expression: 'window.__jshookTestHarness.multiply(3, 9)' });
-      args = { sessionId, hookId: ctx.state.hookId || 'v2-matrix-hook' };
+      args = { sessionId, hookId: ctx.state.hookId || 'v2-matrix-hook', targetField: 'result' };
       break;
     case 'flow.collect-site':
       args = { sessionId, url: ctx.options.url, waitProfile: 'interactive', collectionStrategy: 'manifest' };
       break;
     case 'flow.find-signature-path':
-      args = { sessionId, requestPattern: 'aweme' };
+      args = { sessionId, requestPattern: 'aweme', targetField: 'aweme', fieldRole: 'explicit' };
       break;
     case 'flow.trace-request':
-      args = { sessionId, urlPattern: 'check_qrconnect' };
+      args = { sessionId, urlPattern: 'check_qrconnect', targetField: 'token', fieldRole: 'derived', preferredValidation: ['inspect.interceptor', 'inspect.function-trace'] };
       break;
     case 'flow.generate-hook':
-      args = { sessionId, description: '自动破解 window.__jshookTestHarness.multiply 并捕获返回值' };
+      args = {
+        sessionId,
+        description: '自动破解 window.__jshookTestHarness.multiply 并捕获返回值',
+        targetField: 'result',
+        fieldRole: 'derived',
+        preferredHookTypes: ['object-method', 'function'],
+        injectStrategy: 'auto',
+      };
       break;
     case 'flow.reverse-report':
       args = { sessionId, focus: 'overview' };
@@ -754,7 +866,7 @@ async function runV2Scenario(ctx: MatrixContext, tool: string): Promise<MatrixEn
       throw new Error(`Unhandled V2 tool scenario: ${tool}`);
   }
 
-  const payload = await executeTool(ctx, tool, args);
+  const payload = directPayload || await executeTool(ctx, tool, args);
   if (tool === 'browser.launch' && typeof payload.sessionId === 'string') {
     ctx.state.sessionId = payload.sessionId;
   }
@@ -1027,10 +1139,7 @@ async function runLegacyScenario(ctx: MatrixContext, tool: string): Promise<Matr
       args = { hookId: ctx.state.hookId || 'legacy-matrix-hook', format: 'json' };
       break;
     case 'breakpoint_set':
-      {
-        const target = await ensureLegacyScriptTarget(ctx);
-        args = { scriptId: target?.scriptId, lineNumber: target?.lineNumber ?? 0 };
-      }
+      args = { url: ctx.options.url, lineNumber: 0 };
       break;
     case 'breakpoint_remove':
       {
@@ -1039,8 +1148,7 @@ async function runLegacyScenario(ctx: MatrixContext, tool: string): Promise<Matr
           ? (existing.breakpoints[0] as { breakpointId?: string }).breakpointId
           : undefined;
         if (!breakpointId) {
-          const target = await ensureLegacyScriptTarget(ctx);
-          await executeTool(ctx, 'breakpoint_set', { scriptId: target?.scriptId, lineNumber: target?.lineNumber ?? 0 });
+          await executeTool(ctx, 'breakpoint_set', { url: ctx.options.url, lineNumber: 0 });
           const created = await executeTool(ctx, 'breakpoint_list', {});
           breakpointId = Array.isArray(created.breakpoints) && created.breakpoints[0]
             ? (created.breakpoints[0] as { breakpointId?: string }).breakpointId
@@ -1355,14 +1463,29 @@ function orderTools(toolNames: string[], surface: SurfaceMode) {
     'browser.status',
     'flow.collect-site',
     'browser.navigate',
+    'browser.storage',
+    'browser.capture',
+    'browser.interact',
+    'browser.stealth',
+    'browser.captcha',
     'inspect.runtime',
     'inspect.dom',
     'inspect.scripts',
     'inspect.network',
+    'inspect.function-trace',
+    'inspect.interceptor',
     'inspect.artifact',
     'inspect.evidence',
     'debug.control',
     'debug.evaluate',
+    'debug.breakpoint',
+    'debug.watch',
+    'debug.xhr',
+    'debug.event',
+    'debug.blackbox',
+    'analyze.understand',
+    'analyze.crypto',
+    'analyze.coverage',
     'analyze.bundle-fingerprint',
     'analyze.source-map',
     'analyze.script-diff',

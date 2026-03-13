@@ -1,6 +1,10 @@
 // @ts-nocheck
 
 import { MCPServer as LegacyMCPServer } from '../../MCPServer.js';
+import { shouldExposeLegacyTool } from './legacyToolFilter.js';
+export function formatLegacyToolDescription(description) {
+    return `[legacy][compatibility-only] ${String(description || '').trim()}`;
+}
 export class LegacyToolBridge {
     legacyServer;
     initialized = false;
@@ -20,9 +24,9 @@ export class LegacyToolBridge {
         this.initialized = true;
     }
     getTools() {
-        return this.surface.getTools().map((tool) => ({
+        return this.surface.getTools().filter((tool) => shouldExposeLegacyTool(tool.name)).map((tool) => ({
             ...tool,
-            description: `[legacy] ${tool.description}`,
+            description: formatLegacyToolDescription(tool.description),
         }));
     }
     async execute(name, args) {

@@ -1,9 +1,12 @@
 // @ts-nocheck
 
 import * as parser from '@babel/parser';
-import traverse from '@babel/traverse';
+import traverseModule from '@babel/traverse';
 import * as t from '@babel/types';
 import { logger } from '../../utils/logger.js';
+import { resolveBabelTraverse } from '../../utils/babelTraverse.js';
+
+const traverse = resolveBabelTraverse(traverseModule);
 export function detectByAST(code, rulesManager) {
     const algorithms = [];
     const parameters = new Map();
@@ -155,6 +158,9 @@ function extractCryptoParameters(node, parameters) {
                         }
                         else if (t.isNumericLiteral(prop.value)) {
                             params[key] = prop.value.value;
+                        }
+                        else if (t.isIdentifier(prop.value)) {
+                            params[key] = prop.value.name;
                         }
                     }
                 });

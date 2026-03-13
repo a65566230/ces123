@@ -21,7 +21,7 @@ export class V2MCPServer {
         this.runtime = new ToolRuntimeContext(config, options);
         this.legacyBridge = options.enableLegacyTools ? new LegacyToolBridge(config) : undefined;
         const descriptors = [
-            ...createV2Tools(this.runtime),
+            ...createV2Tools(this.runtime, options.toolProfile),
             ...(this.legacyBridge
                 ? this.legacyBridge.getTools().map((tool) => ({
                     ...tool,

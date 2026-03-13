@@ -1,0 +1,17 @@
+{
+  "client": "codex",
+  "clientVersion": "example",
+  "model": "example-model",
+  "profile": "core",
+  "transport": "native-mcp",
+  "scenario": "fresh-triage",
+  "turnCount": 3,
+  "toolCalls": 2,
+  "success": true,
+  "notes": "Replace this file with real client benchmark data.",
+  "responseModeResults": {
+    "inspect.scripts": {
+      "recommendedMode": "compact"
+    }
+  }
+}
